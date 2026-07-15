@@ -576,15 +576,25 @@ std::vector<float> Dnp3ApplicationNew::GetVal(std::map<std::string, std::string>
   std::string delimiter = ",";
   size_t pos = 0;
   std::string token;
+  std::string key = "MIM-" + std::to_string(MIM_ID) + "-" + tag;
+
+  auto it = attack.find(key);
+  if (it == attack.end() || it->second.empty()) {
+    std::cout << "Warning: GetVal() found no value for key '" << key
+               << "' (MIM_ID=" << MIM_ID << ", tag=" << tag
+               << "). Returning empty vector." << std::endl;
+    return timer;
+  }
+
   std::cout << MIM_ID << " " << tag << std::endl;
-  while ((pos = attack["MIM-"+std::to_string(MIM_ID)+"-"+tag].find(delimiter)) != std::string::npos) {
-        token = attack["MIM-"+std::to_string(MIM_ID)+"-"+tag].substr(0, pos);
+  while ((pos = attack[key].find(delimiter)) != std::string::npos) {
+        token = attack[key].substr(0, pos);
 	std::cout << "Stof 1" << std::endl;
 	timer.push_back(std::stof(token));
-        attack["MIM-"+std::to_string(MIM_ID)+"-"+tag].erase(0, pos + delimiter.length());
+        attack[key].erase(0, pos + delimiter.length());
   }
-  std::cout << "I am printing here ----------------------- " << attack["MIM-"+std::to_string(MIM_ID)+"-"+tag] << std::endl;
-  timer.push_back(std::stof(attack["MIM-"+std::to_string(MIM_ID)+"-"+tag]));
+  std::cout << "I am printing here ----------------------- " << attack[key] << std::endl;
+  timer.push_back(std::stof(attack[key]));
   return timer;
 }
 
@@ -1756,10 +1766,10 @@ void Dnp3ApplicationNew::handle_MIM(Ptr<Socket> socket) {
                         r = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
 		    }
 
-                    float chance = attackChance[qq]; //(qq < attackChance.size()) ? attackChance[qq] : 0.0f;
-                    float startTime = start[qq]; //(qq < start.size()) ? start[qq] : 0.0f;
-                    float stopTime = stop[qq]; // (qq < stop.size()) ? stop[qq] : 0.0f;
-                    float type = attackType[qq]; //(qq < attackType.size()) ? attackType[qq] : 0.0f;
+                    float chance = (qq < attackChance.size()) ? attackChance[qq] : 0.0f;
+                    float startTime = (qq < start.size()) ? start[qq] : 0.0f;
+                    float stopTime = (qq < stop.size()) ? stop[qq] : 0.0f;
+                    float type = (qq < attackType.size()) ? attackType[qq] : 0.0f;
 
                     if (currentTime > startTime && currentTime < stopTime && chance > r) {
                         netStatsOut << currentTime << " " << ID_point[qq] << " SUCCESS " << type << std::endl;
