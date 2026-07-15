@@ -34,6 +34,16 @@
 #include "ns3/application.h"
 #include "ns3/event-id.h"
 #include "ns3/ptr.h"
+#include "ns3/socket.h" // full Socket definition needed (not just the forward
+                         // declaration below) since we call Socket methods
+                         // directly (Bind, Connect, Listen, &Socket::Send,
+                         // etc.) -- this was missed when initially porting
+                         // DNP3's includes; caught by the first real compile
+                         // attempt (incomplete-type errors on Socket usage
+                         // in makeTcpConnection).
+#include "ns3/socket-factory.h" // used alongside Socket::CreateSocket() /
+                                 // TypeId::LookupByName("ns3::TcpSocketFactory")
+#include "ns3/node.h" // full Node definition for GetNode()/AddApplication()
 #include "ns3/traced-callback.h"
 #include "ns3/address.h"
 #include "ns3/random-variable-stream.h"
@@ -47,6 +57,8 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <iostream> // std::cout is used directly in several places (e.g.
+                    // initConfig), ported from DNP3 which includes this too
 
 #include "ns3/helics-application.h"
 #include "ns3/helics.h" // declares `extern std::shared_ptr<helics::CombinationFederate> helics_federate;`
