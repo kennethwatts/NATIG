@@ -152,9 +152,8 @@ RUN cd ${RD2C} \
 RUN cd $RD2C \
     && git clone https://github.com/nsnam/ns-3-dev-git.git \
     && mv ns-3-dev-git ns-3-dev \
-    && mkdir PUSH \
-    && cd PUSH \
-    && git clone https://github.com/pnnl/NATIG.git 
+    && mkdir PUSH 
+COPY . ${RD2C}/PUSH/NATIG
 
 #Update code in NS3 and Gridlabd
 RUN cd $RD2C/PUSH \
