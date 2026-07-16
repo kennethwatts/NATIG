@@ -3,8 +3,8 @@
     {},
     {
       "attack_chance": "1.0",
-      "PointStart": "0",
-      "PointStop": "30",
+      "PointStart": "10",
+      "PointStop": "20",
       "attack_type": "2"
     }
   ]
