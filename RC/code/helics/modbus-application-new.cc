@@ -71,6 +71,22 @@
 
 namespace ns3 {
 
+NS_LOG_COMPONENT_DEFINE ("ModbusApplicationNew");
+
+// CRITICAL: this macro forces ModbusApplicationNew::GetTypeId() to run at
+// static-initialization time (before main() executes), registering the
+// TypeId by name in ns-3's IidManager singleton. Without it,
+// ModbusApplicationHelperNew's constructor -- which looks up
+// "ns3::ModbusApplicationNew" by string name via
+// m_factory.SetTypeId(...) -- finds nothing, and the very next
+// m_factory.Set(...) call segfaults inside IidManager::GetAttributeN
+// dereferencing an uninitialized/invalid type-info pointer. This was
+// missing entirely from the initial port and caught via gdb backtrace
+// on the first runtime test -- DNP3's file has the equivalent macro
+// (NS_OBJECT_ENSURE_REGISTERED (Dnp3ApplicationNew);) right after its
+// own NS_LOG_COMPONENT_DEFINE, which we failed to carry over.
+NS_OBJECT_ENSURE_REGISTERED (ModbusApplicationNew);
+
 // ==================== from modbus-typeid-ctor.cc ====================
 TypeId
 ModbusApplicationNew::GetTypeId (void)
@@ -1031,7 +1047,21 @@ ModbusApplicationNew::makeTcpConnection (void)
                 }
             }
 
-          m_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress), m_remotePort));
+          // BUG FIX: the outstation must NOT call m_socket->Connect()
+          // here. This was inherited from porting DNP3's UDP-based
+          // connection logic, where Connect() on a UDP socket just sets
+          // a default destination address (harmless, no real
+          // handshake). For TCP, Connect() actively initiates a 3-way
+          // handshake -- calling both Connect() AND Listen() on the
+          // same socket object (Listen() happens a few lines below,
+          // unconditionally, for the outstation) is invalid TCP socket
+          // usage. The outstation's m_socket must only ever Listen()
+          // and accept inbound connections; it never actively connects
+          // out itself. Caught via std::cerr tracing: Socket::Send()
+          // on the master reported success every time, yet
+          // HandleAccept/handle_normal never fired on the outstation
+          // and no perf.txt was ever created -- this conflicting
+          // Connect()+Listen() usage on the same socket is the reason.
           mim_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress2), m_localPort));
           startOutstation (m_socket);
           if (m_name.find ("Inside") != std::string::npos || m_name.find ("MIM") != std::string::npos)
@@ -1050,11 +1080,27 @@ ModbusApplicationNew::makeTcpConnection (void)
 
   if (m_isMaster)
     {
-      Simulator::Schedule (Seconds (10), &ModbusApplicationNew::ConnectToPeer, this, m_socket, m_remotePort);
+      // NOTE: this was previously Seconds(10) -- an arbitrary value set
+      // without cross-checking it against the scenario's own poll-start
+      // timing. Since periodic_poll's first call is typically scheduled
+      // around t=1.005s (see ns3-modbus-minimal-test.cc), a 10-second
+      // connection delay meant every poll attempt before t=10s tried to
+      // Send() on a socket that had never even attempted to connect.
+      // Reduced to well before any reasonable poll-start time; TCP
+      // handshake over a simple point-to-point link with a few ms of
+      // delay should complete essentially instantly, so this margin is
+      // generous, not tight. Caught via std::cerr tracing: periodic_poll
+      // fired correctly with a nonzero point count, but handle_normal on
+      // the outstation never fired and no perf.txt was ever created.
+      Simulator::Schedule (MilliSeconds (100), &ModbusApplicationNew::ConnectToPeer, this, m_socket, m_remotePort);
     }
   else
     {
-      m_socket->Listen ();
+      int listenResult = m_socket->Listen ();
+      if (listenResult != 0)
+        {
+          NS_LOG_WARN ("ModbusApplication: '" << m_name << "' Listen() failed");
+        }
     }
 }
 
@@ -1062,8 +1108,27 @@ void
 ModbusApplicationNew::ConnectToPeer (Ptr<Socket> localSocket, uint16_t servPort)
 {
   NS_LOG_INFO ("ModbusApplication: connecting to remote " << m_remoteAddress);
+
+  m_socket->SetConnectCallback (
+    MakeCallback (&ModbusApplicationNew::HandleConnectionSucceeded, this),
+    MakeCallback (&ModbusApplicationNew::HandleConnectionFailed, this));
+
   m_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress), m_remotePort));
   mim_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress2), m_localPort));
+}
+
+void
+ModbusApplicationNew::HandleConnectionSucceeded (Ptr<Socket> socket)
+{
+  NS_LOG_INFO ("ModbusApplication: '" << m_name << "' TCP connection succeeded at t="
+               << Simulator::Now ().GetSeconds () << "s");
+}
+
+void
+ModbusApplicationNew::HandleConnectionFailed (Ptr<Socket> socket)
+{
+  NS_LOG_WARN ("ModbusApplication: '" << m_name << "' TCP connection failed at t="
+               << Simulator::Now ().GetSeconds () << "s");
 }
 
 void
@@ -1134,6 +1199,21 @@ ModbusApplicationNew::startMaster ()
   // No library object construction needed -- master-side request
   // issuance happens via ReadHoldingRegisters/ReadCoils/
   // WriteSingleRegister/WriteSingleCoil, called from periodic_poll.
+  //
+  // CRITICAL FIX: initConfig() must be called here too, not just in
+  // startOutstation(). Without it, the master's m_deviceConfig
+  // (holdingRegisters/coils) stays completely empty forever, since
+  // nothing else populates it -- meaning periodic_poll's own
+  // analogCount/coilCount checks always see zero points to poll, so
+  // the master silently never sends any request at all. Caught via
+  // std::cerr tracing during the first successful (non-crashing) run:
+  // periodic_poll fired correctly on schedule, but with
+  // analogCount=0/coilCount=0 every time, so handle_normal on the
+  // outstation side never received anything and perf.txt was never
+  // created. The master needs its own copy of the points file (same
+  // PointsFilename the scenario sets on both helpers) so it knows
+  // what address range to poll.
+  initConfig ();
 }
 
 void
@@ -1196,13 +1276,23 @@ ModbusApplicationNew::send_directly (Ptr<Packet> p)
 }
 
 void
-ModbusApplicationNew::send_directly_server (Ptr<Packet> p)
+ModbusApplicationNew::send_directly_server (Ptr<Socket> sock, Ptr<Packet> p)
 {
+  // BUG FIX: this previously hardcoded sending via mim_socket
+  // regardless of caller -- but handle_normal's outstation response
+  // path needs to reply on the SAME accepted-connection socket the
+  // request arrived on (the `socket` parameter HandleRead/handle_normal
+  // actually received from HandleAccept), not the insider/MIM socket,
+  // which is a separate connection to an unrelated address. Caught
+  // after confirming requests were being delivered successfully (via
+  // perf.txt and handle_normal tracing) but responses never reached
+  // the master -- the response was being sent out the wrong socket
+  // entirely.
   m_txTrace (p);
   int delay_ns = (int) (m_rand_delay_ns->GetValue (m_jitterMinNs, m_jitterMaxNs) + 0.5);
 
   int (Socket::*fp)(Ptr<Packet>, uint32_t) = &Socket::Send;
-  Simulator::Schedule (NanoSeconds (delay_ns), fp, mim_socket, p, 0);
+  Simulator::Schedule (NanoSeconds (delay_ns), fp, sock, p, 0);
 }
 
 void
@@ -1391,7 +1481,7 @@ ModbusApplicationNew::handle_normal (Ptr<Socket> socket)
             }
 
           Ptr<Packet> responsePacket = EncodePDU (responsePdu, m_deviceConfig.unitId);
-          send_directly_server (responsePacket);
+          send_directly_server (socket, responsePacket);
         }
 
       Record (packet, from);
@@ -1615,7 +1705,12 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
             }
 
           Ptr<Packet> responsePacket = EncodePDU (responsePdu, m_deviceConfig.unitId);
-          send_directly (responsePacket);
+          // BUG FIX: was send_directly(responsePacket), which hardcodes
+          // m_socket -- same class of bug as handle_normal's response
+          // path (see send_directly_server's updated comment). Replies
+          // must go out on the actual accepted-connection socket the
+          // request arrived on.
+          send_directly_server (socket, responsePacket);
         }
 
       Record (packet, from);
@@ -1756,6 +1851,24 @@ ModbusApplicationNew::SetEndpointName (const std::string &name, bool is_global)
 {
   NS_LOG_FUNCTION (this << name << is_global);
   SetName (name);
+
+  // Guard against running without a HELICS federate set up (e.g. a
+  // socket-level-only test scenario that doesn't stand up HELICS at
+  // all). Without this check, dereferencing a null/default-constructed
+  // helics_federate below segfaults -- this was the actual root cause
+  // of a lengthy crash investigation during the first Modbus runtime
+  // test, which deliberately ran without HELICS. DNP3's original never
+  // hits this because its production topology always sets up a real
+  // federate before installing any application; this defensive check
+  // makes that same assumption safe to violate instead of fatal.
+  if (!helics_federate)
+    {
+      NS_LOG_WARN ("ModbusApplicationNew::SetEndpointName: helics_federate is not set; "
+                   "skipping HELICS endpoint registration for '" << name << "'. "
+                   "This is expected if running without a HELICS federate/broker.");
+      return;
+    }
+
   if (is_global)
     {
       m_endpoint_id = helics_federate->registerGlobalEndpoint (name);

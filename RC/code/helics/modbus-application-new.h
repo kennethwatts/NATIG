@@ -235,6 +235,8 @@ private:
   void HandlePeerClose (Ptr<Socket> socket);
   void HandlePeerError (Ptr<Socket> socket);
   void ConnectToPeer (Ptr<Socket> localSocket, uint16_t servPort);
+  void HandleConnectionSucceeded (Ptr<Socket> socket);
+  void HandleConnectionFailed (Ptr<Socket> socket);
 
   void store_points (std::string point, std::string value);
   void initConfig (void);
@@ -253,7 +255,7 @@ private:
   void readMicroGridConfig (std::string fpath, Json::Value& configobj);
   void set_attack (bool state);
   void send_directly (Ptr<Packet> packet);
-  void send_directly_server (Ptr<Packet> packet);
+  void send_directly_server (Ptr<Socket> sock, Ptr<Packet> packet);
   std::vector<std::string> get_val_vector (std::string delimiter, std::string m_attack_val);
   float get_val (std::vector<std::string> val, std::vector<std::string> val_min, std::vector<std::string> val_max, int index);
 
