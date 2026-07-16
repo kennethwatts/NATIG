@@ -738,7 +738,7 @@ enum class ModbusException : uint8_t {
 // checksums.
 // -------------------------------------------------------------------
 ModbusPDU
-ModbusApplicationNew::DecodePDU (Ptr<Packet> packet)
+ModbusApplicationNew::DecodePDU (Ptr<Packet> packet, bool isResponse)
 {
   ModbusPDU pdu;
   uint32_t size = packet->GetSize ();
@@ -784,22 +784,62 @@ ModbusApplicationNew::DecodePDU (Ptr<Packet> packet)
       case static_cast<uint8_t>(ModbusFunctionCode::READ_COILS):
       case static_cast<uint8_t>(ModbusFunctionCode::READ_HOLDING_REGISTERS):
         {
-          // Request form: starting address (2) + quantity (2)
-          if (dataLen < 4)
-            {
-              NS_LOG_WARN ("DecodePDU: read request too short, discarding");
-              pdu.quantity = 0;
-              return pdu;
-            }
           pdu.functionCode = static_cast<ModbusFunctionCode>(functionCode);
-          pdu.address = ReadU16BE (&data[0]);
-          pdu.quantity = ReadU16BE (&data[2]);
+
+          if (isResponse)
+            {
+              // BUG FIX: response wire format is completely different
+              // from the request -- per spec section 6.1/6.3, a
+              // Read Coils / Read Holding Registers RESPONSE is
+              // byteCount(1) + data(N bytes), NOT address+quantity.
+              // Previously this function always assumed the request
+              // shape regardless of direction, so the master's
+              // handle_normal branch always got an empty pdu.data
+              // when decoding a response -- no crash, just silently
+              // zero register/coil values ever extracted. Caught via
+              // byte-level cross-check against the official Modbus
+              // Application Protocol Specification V1.1b3.
+              if (dataLen < 1)
+                {
+                  NS_LOG_WARN ("DecodePDU: response too short for byte count, discarding");
+                  pdu.quantity = 0;
+                  return pdu;
+                }
+              uint8_t byteCount = data[0];
+              if (dataLen < static_cast<uint32_t>(1 + byteCount))
+                {
+                  NS_LOG_WARN ("DecodePDU: response byte count (" << static_cast<int>(byteCount)
+                               << ") exceeds actual data available, discarding");
+                  pdu.quantity = 0;
+                  return pdu;
+                }
+              pdu.data.assign (&data[1], &data[1 + byteCount]);
+              // quantity isn't carried in the response wire format;
+              // set it to the decoded byte count so callers can still
+              // use "quantity == 0" as a rough malformed-response
+              // signal without misinterpreting it as an address field.
+              pdu.quantity = byteCount;
+            }
+          else
+            {
+              // Request form: starting address (2) + quantity (2)
+              if (dataLen < 4)
+                {
+                  NS_LOG_WARN ("DecodePDU: read request too short, discarding");
+                  pdu.quantity = 0;
+                  return pdu;
+                }
+              pdu.address = ReadU16BE (&data[0]);
+              pdu.quantity = ReadU16BE (&data[2]);
+            }
           break;
         }
 
       case static_cast<uint8_t>(ModbusFunctionCode::WRITE_SINGLE_COIL):
         {
-          // address (2) + value (2; 0xFF00=ON, 0x0000=OFF)
+          // Per spec section 6.5, the response is an exact echo of the
+          // request (address(2) + value(2)) -- same shape either way,
+          // no isResponse branching needed here.
           if (dataLen < 4)
             {
               NS_LOG_WARN ("DecodePDU: write-coil request too short, discarding");
@@ -814,7 +854,7 @@ ModbusApplicationNew::DecodePDU (Ptr<Packet> packet)
 
       case static_cast<uint8_t>(ModbusFunctionCode::WRITE_SINGLE_REGISTER):
         {
-          // address (2) + value (2)
+          // Per spec section 6.6, same echo-shape reasoning as above.
           if (dataLen < 4)
             {
               NS_LOG_WARN ("DecodePDU: write-register request too short, discarding");
@@ -1347,7 +1387,7 @@ ModbusApplicationNew::handle_normal (Ptr<Socket> socket)
           // this handles the single-outstanding-request case, which
           // matches how periodic_poll currently issues one request at
           // a time.)
-          ModbusPDU responsePdu = DecodePDU (packet);
+          ModbusPDU responsePdu = DecodePDU (packet, /* isResponse */ true);
 
           if (responsePdu.quantity == 0 && responsePdu.data.empty ())
             {

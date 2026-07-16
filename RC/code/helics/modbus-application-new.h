@@ -246,7 +246,7 @@ private:
 
   // -- Modbus PDU encode/decode (from-scratch, replaces DNP3's --
   // -- link-layer parsing done inside the vendored library) --
-  ModbusPDU DecodePDU (Ptr<Packet> packet);
+  ModbusPDU DecodePDU (Ptr<Packet> packet, bool isResponse = false);
   Ptr<Packet> EncodePDU (const ModbusPDU& pdu, uint8_t unitId);
 
   // -- MIM/attack handling: same shape as DNP3's handle_MIM/handle_normal --
