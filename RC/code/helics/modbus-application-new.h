@@ -133,6 +133,12 @@ struct ModbusPDU {
   uint16_t value   = 0;      // used for single coil/register writes
   uint16_t quantity = 0;     // used for read requests
   std::vector<uint8_t> data; // raw payload for reads/responses
+  // Set by a handler to signal EncodePDU should build a spec-compliant
+  // exception response (function code | 0x80 + exceptionCode) instead
+  // of a normal response, e.g. for an illegal value on an otherwise
+  // valid function code (see WRITE_SINGLE_COIL's illegal-value check).
+  bool isException = false;
+  uint8_t exceptionCode = 0;
 };
 
 // Replaces DNP3's Master::MasterConfig / Outstation::OutstationConfig /

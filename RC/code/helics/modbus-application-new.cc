@@ -921,6 +921,28 @@ ModbusApplicationNew::EncodePDU (const ModbusPDU& pdu, uint8_t unitId)
   // Placeholder MBAP header -- transactionId and length filled in below
   // once we know the PDU body size.
   std::vector<uint8_t> pduBytes;
+
+  if (pdu.isException)
+    {
+      // Per spec: exception response is original function code | 0x80,
+      // followed by a single exception code byte. This is checked
+      // before the normal switch below so a handler can flag an
+      // otherwise-valid function code as illegal for this specific
+      // request (e.g. WRITE_SINGLE_COIL with a value other than
+      // 0xFF00/0x0000) without needing to fall through the
+      // unsupported-function-code default case, which always uses
+      // ILLEGAL_FUNCTION and would report the wrong exception type.
+      pduBytes.push_back (static_cast<uint8_t>(pdu.functionCode) | 0x80);
+      pduBytes.push_back (pdu.exceptionCode);
+
+      uint16_t length = static_cast<uint16_t>(1 + pduBytes.size ());
+      WriteU16BE (adu, 0);
+      WriteU16BE (adu, 0);
+      WriteU16BE (adu, length);
+      adu.push_back (unitId);
+      adu.insert (adu.end (), pduBytes.begin (), pduBytes.end ());
+      return Create<Packet> (adu.data (), adu.size ());
+    }
   pduBytes.push_back (static_cast<uint8_t>(pdu.functionCode));
 
   switch (pdu.functionCode)
@@ -1532,9 +1554,27 @@ ModbusApplicationNew::handle_normal (Ptr<Socket> socket)
 
               case ModbusFunctionCode::WRITE_SINGLE_COIL:
                 {
-                  bool coilVal = (requestPdu.value == 0xFF00);
-                  SetCoil (requestPdu.address, coilVal);
-                  responsePdu.value = requestPdu.value; // echo, per spec
+                  // Per spec section 6.5: only 0xFF00 (ON) and 0x0000
+                  // (OFF) are valid; all other values are illegal.
+                  // Previously any non-0xFF00 value was silently
+                  // treated as OFF -- not incorrect for well-formed
+                  // traffic, but not spec-compliant for malformed/
+                  // fuzzed input, which matters for attack-surface
+                  // testing.
+                  if (requestPdu.value == 0xFF00 || requestPdu.value == 0x0000)
+                    {
+                      bool coilVal = (requestPdu.value == 0xFF00);
+                      SetCoil (requestPdu.address, coilVal);
+                      responsePdu.value = requestPdu.value; // echo, per spec
+                    }
+                  else
+                    {
+                      NS_LOG_WARN ("ModbusApplication (outstation): illegal coil value 0x"
+                                   << std::hex << requestPdu.value << std::dec
+                                   << " for WRITE_SINGLE_COIL, sending exception response");
+                      responsePdu.isException = true;
+                      responsePdu.exceptionCode = static_cast<uint8_t>(ModbusException::ILLEGAL_DATA_VALUE);
+                    }
                   break;
                 }
 
