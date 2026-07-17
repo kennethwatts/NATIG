@@ -179,6 +179,8 @@ public:
   uint16_t GetHoldingRegister (uint16_t address) const;
   void SetCoil (uint16_t address, bool value);
   bool GetCoil (uint16_t address) const;
+  uint16_t GetFrozenHoldingRegister (uint16_t address) const;
+  bool GetFrozenCoil (uint16_t address) const;
 
   Address m_localAddress;
   uint16_t m_localPort;
@@ -273,6 +275,12 @@ private:
   int integrityPollInterval;
 
   ModbusDeviceConfig m_deviceConfig;
+  // Snapshot of m_deviceConfig taken at the moment the outstation
+  // transitions offline (see set_offline), used to serve "last known
+  // good" values while offline instead of either live values or a
+  // hardcoded 0/false, mirroring DNP3's frozen_analog_points/
+  // frozen_bin_points mechanism.
+  ModbusDeviceConfig m_frozenDeviceConfig;
 
   bool m_enableTcp;
   bool m_connected;

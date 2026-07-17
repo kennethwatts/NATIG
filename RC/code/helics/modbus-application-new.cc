@@ -27,8 +27,6 @@
  * KNOWN OPEN ITEMS AT TIME OF ASSEMBLY (see full project discussion
  * for details on each):
  *   - Not yet compiled or tested against ns-3's actual build.
- *   - No frozen-value snapshot mechanism (m_offline mode returns 0
- *     for holding-register reads rather than a real snapshot).
  *   - Build-system wiring not yet done: no wscript entry, no
  *     build_ns3.sh/build_helics.sh copy lines, no decision yet on
  *     whether a "-Docker" variant is needed (see the DNP3 side's
@@ -458,6 +456,20 @@ ModbusApplicationNew::GetCoil (uint16_t address) const
   return (it != m_deviceConfig.coils.end ()) ? it->second : false;
 }
 
+uint16_t
+ModbusApplicationNew::GetFrozenHoldingRegister (uint16_t address) const
+{
+  auto it = m_frozenDeviceConfig.holdingRegisters.find (address);
+  return (it != m_frozenDeviceConfig.holdingRegisters.end ()) ? it->second : 0;
+}
+
+bool
+ModbusApplicationNew::GetFrozenCoil (uint16_t address) const
+{
+  auto it = m_frozenDeviceConfig.coils.find (address);
+  return (it != m_frozenDeviceConfig.coils.end ()) ? it->second : false;
+}
+
 // -------------------------------------------------------------------
 // store_points -- called via HELICS's Store() (see DoEndpoint in the
 // HELICS-layer file). DIVERGES from DNP3: translates point name to a
@@ -519,13 +531,21 @@ ModbusApplicationNew::set_offline (bool offline)
     }
   else
     {
-      // NOTE: DNP3's version snapshots frozen_analog_points/
-      // frozen_bin_points here for later use when offline. We haven't
-      // wired an equivalent frozen-value snapshot into m_deviceConfig
-      // yet (see the TODO already flagged in modbus-handle-normal.cc's
-      // READ_HOLDING_REGISTERS case, which currently just returns 0
-      // when m_offline is true) -- this is the other half of that
-      // still-open item, not a new gap.
+      // Snapshot live values into m_frozenDeviceConfig at the moment of
+      // the actual online->offline transition (guarded by !m_offline so
+      // a redundant set_offline(true) call while already offline
+      // doesn't overwrite the frozen snapshot with a later live state).
+      // This mirrors DNP3's frozen_analog_points/frozen_bin_points
+      // snapshot mechanism, using our own m_deviceConfig-shaped
+      // storage instead of DNP3's separate name-keyed maps.
+      if (offline && !m_offline)
+        {
+          m_frozenDeviceConfig = m_deviceConfig;
+          NS_LOG_INFO ("ModbusApplication::set_offline: snapshotted "
+                       << m_frozenDeviceConfig.holdingRegisters.size ()
+                       << " registers and " << m_frozenDeviceConfig.coils.size ()
+                       << " coils for offline mode");
+        }
       m_offline = offline;
     }
 }
@@ -1464,8 +1484,7 @@ ModbusApplicationNew::handle_normal (Ptr<Socket> socket)
                     {
                       uint16_t addr = requestPdu.address + i;
                       uint16_t val = (m_offline)
-                        ? 0  // TODO: wire up frozen/offline value snapshot, mirroring
-                             // DNP3's frozen_analog_points, once that behavior is needed
+                        ? GetFrozenHoldingRegister (addr)
                         : GetHoldingRegister (addr);
                       responsePdu.data.push_back (static_cast<uint8_t>((val >> 8) & 0xFF));
                       responsePdu.data.push_back (static_cast<uint8_t>(val & 0xFF));
@@ -1475,12 +1494,16 @@ ModbusApplicationNew::handle_normal (Ptr<Socket> socket)
 
               case ModbusFunctionCode::READ_COILS:
                 {
+                  // NOTE: previously had no offline handling at all
+                  // (always returned live values) -- inconsistent with
+                  // READ_HOLDING_REGISTERS's intent. Fixed alongside
+                  // the frozen-snapshot mechanism for consistency.
                   uint8_t currentByte = 0;
                   int bitPos = 0;
                   for (uint16_t i = 0; i < requestPdu.quantity; i++)
                     {
                       uint16_t addr = requestPdu.address + i;
-                      bool val = GetCoil (addr);
+                      bool val = (m_offline) ? GetFrozenCoil (addr) : GetCoil (addr);
                       if (val)
                         {
                           currentByte |= (1 << bitPos);
