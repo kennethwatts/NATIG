@@ -1259,7 +1259,17 @@ void Dnp3ApplicationNew::handle_inside(Ptr<Socket> socket) {
 		if(mitm_flag == true) {
 		       Json::Value configObject;
                        std::map<std::string, std::string> attack;
-                       if (configFile.find("NA") == std::string::npos){
+                       // BUG FIX: was configFile.find("NA") == std::string::npos, a
+                       // substring check meant to detect AttackConf's unset "NA"
+                       // sentinel default. Any real path containing "NA" anywhere
+                       // (e.g. this repo's own directory name, NATIG) false-matched
+                       // the sentinel and silently skipped reading the real config,
+                       // leaving the MIM attack unable to fire. Found while porting
+                       // this same pattern to the MMS application; fixed here too
+                       // with exact equality (same fix applied in all three
+                       // occurrences of this check in this file and in
+                       // modbus-application-new.cc).
+                       if (configFile != "NA"){
                             readMicroGridConfig(configFile, configObject);
                             for (uint32_t j = 1; j < configObject["MIM"].size(); j++){
                                 for(const auto& item : configObject["MIM"][j].getMemberNames() ){
@@ -1693,7 +1703,7 @@ void Dnp3ApplicationNew::handle_MIM(Ptr<Socket> socket) {
         if (mitm_flag) {
             Json::Value configObject;
             std::map<std::string, std::string> attack;
-            if (configFile.find("NA") == std::string::npos && !ID_point.empty()) {
+            if (configFile != "NA" && !ID_point.empty()) {
                 readMicroGridConfig(configFile, configObject);
                 for (uint32_t j = 1; j < configObject["MIM"].size(); j++) {
                     for (const auto& item : configObject["MIM"][j].getMemberNames()) {
@@ -1874,7 +1884,7 @@ void Dnp3ApplicationNew::handle_MIM(Ptr<Socket> socket) {
                 }
 
                 // Schedule attack start/stop if needed
-                if (configFile.find("NA") == std::string::npos && !ID_point.empty()) {
+                if (configFile != "NA" && !ID_point.empty()) {
                     if (std::find(StartVect.begin(), StartVect.end(), attack["MIM-" + std::to_string(MIM_ID) + "-Start"]) == StartVect.end()) {
                         Simulator::Schedule(Seconds(std::stoi(attack["MIM-" + std::to_string(MIM_ID) + "-Start"])), &Dnp3ApplicationNew::set_attack, this, true);
                         StartVect.push_back(attack["MIM-" + std::to_string(MIM_ID) + "-Start"]);

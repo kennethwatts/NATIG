@@ -1721,7 +1721,17 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
         {
           Json::Value configObject;
           std::map<std::string, std::string> attack;
-          if (configFile.find ("NA") == std::string::npos && !ID_point.empty ())
+          // BUG FIX: this was a *substring* check (configFile.find("NA")
+          // == npos) meant to detect the "AttackConf" attribute's unset
+          // sentinel default ("NA"). A substring search is wrong here --
+          // any real path containing "NA" anywhere (e.g. this very
+          // repo's own directory name, NATIG) makes the check think the
+          // attribute looks like the sentinel and silently skips reading
+          // the real config, leaving `attack` permanently empty so the
+          // MIM attack can never fire. Found while validating the MMS
+          // port of this exact pattern against a real Docker path under
+          // /rd2c/PUSH/NATIG/... -- fixed here with exact equality.
+          if (configFile != "NA" && !ID_point.empty ())
             {
               readMicroGridConfig (configFile, configObject);
               for (uint32_t j = 1; j < configObject["MIM"].size (); j++)
