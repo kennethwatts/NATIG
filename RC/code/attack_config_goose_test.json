@@ -1,0 +1,11 @@
+{
+  "MIM": [
+    {},
+    {
+      "attack_chance": "1.0",
+      "PointStart": "10",
+      "PointStop": "20",
+      "attack_type": "2"
+    }
+  ]
+}
