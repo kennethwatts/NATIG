@@ -1027,6 +1027,16 @@ main (int argc, char *argv[])
       dnp3MIM1.SetAttribute("StationDeviceAddress", UintegerValue(2));
       dnp3MIM1.SetAttribute("IntegrityPollInterval", UintegerValue (10));
       dnp3MIM1.SetAttribute("EnableTCP", BooleanValue (false));
+      // BUG FIX: handle_MIM() re-reads AttackConf's JSON at packet-arrival time to
+      // populate its own attack_chance/PointStart/PointStop/attack_type lookups
+      // (see dnp3-application-new.cc), keyed by the object's own MIM_ID attribute --
+      // but neither AttackConf nor ID was ever set here, so that lookup map stayed
+      // permanently empty and every key resolved to "", making GetVal()'s std::stof("")
+      // throw the first time an attack window actually opened against live telemetry.
+      // Modbus and MMS have this identical gap (ported near-verbatim from here); GOOSE
+      // does not, since its rogue-publisher wiring already sets both attributes.
+      dnp3MIM1.SetAttribute("AttackConf", StringValue(configFileName));
+      dnp3MIM1.SetAttribute("ID", UintegerValue(MIM_ID));
       dnp3MIM1.SetAttribute("AttackSelection", UintegerValue(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"])));
 
       dnp3MIM1.SetAttribute("RealVal", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
