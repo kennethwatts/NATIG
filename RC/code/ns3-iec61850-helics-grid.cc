@@ -923,8 +923,20 @@ main (int argc, char *argv[])
     }
     //auto ep_name = configObject["microgrid"][i]["name"].asString();
     std::string IDx = "SS_";
+    // BUG FIX: this used to unconditionally rebuild ep_name as "SS_"+(i+1),
+    // which is only correct if the config's microgrid names are 1-indexed
+    // (SS_1..SS_N). The real 123-bus config (integration/control/config/
+    // grid.json) names them 0-indexed (SS_0..SS_9), matching the loop's
+    // own 0-indexed `i` directly -- so the +1 silently renamed every
+    // substation to the WRONG points file (SS_0 -> looks for
+    // points_SS_1.csv, ..., SS_9 -> looks for points_SS_10.csv, which
+    // doesn't exist -- initConfig's exit(-1) on a missing file would
+    // crash the last substation's load for any protocol using this
+    // shared loop, not just MMS). Found while sourcing real points files
+    // for MMS's 123-bus validation. Using `i` directly matches what's
+    // actually on disk for the current config.
     if (std::string(ep_name).find(IDx) != std::string::npos){
-        ep_name = "SS_"+std::to_string(i+1);
+        ep_name = "SS_"+std::to_string(i);
     }
     std::cout << ep_name << std::endl;
     interface[i] = i+1;
@@ -1034,8 +1046,14 @@ main (int argc, char *argv[])
                   auto ep_name = configObject["MIM"][MIM_ID]["name"].asString();
                   std::string ID2 = "SS_";
                   auto ep_name2 = configObject["microgrid"][MIM_ID-1]["name"].asString();
+                  // BUG FIX: same off-by-one as the microgrid loop above --
+                  // configObject["microgrid"][MIM_ID-1] already fetches the
+                  // 0-indexed name (e.g. "SS_0" for MIM_ID=1), but this
+                  // rebuilt it as "SS_"+MIM_ID (1-indexed), pointing at the
+                  // wrong points file. Use MIM_ID-1 to match the index
+                  // actually read above.
                   if (std::string(ep_name2).find(ID2) != std::string::npos){
-                      ep_name2 = "SS_"+std::to_string(MIM_ID);
+                      ep_name2 = "SS_"+std::to_string(MIM_ID-1);
                   }
 		  //std::cout << "adding node " << ep_name2 << std::endl;
                   Ptr<Node> tempnode = MIMNode.Get(MIM_ID-1); //star.GetSpokeNode (MIM_ID-1);
