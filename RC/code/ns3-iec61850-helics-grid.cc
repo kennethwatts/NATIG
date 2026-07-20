@@ -1119,6 +1119,13 @@ main (int argc, char *argv[])
       // name, not a numeric device/unit address (see the client/server
       // install block above for the same note).
       mmsMIM1.SetAttribute("EnableTCP", BooleanValue (true));
+      // BUG FIX: see identical fix in ns3-helics-grid-dnp3.cc -- handle_MIM()
+      // re-reads AttackConf's JSON at packet-arrival time, keyed by the
+      // object's own MIM_ID attribute, but neither was ever set here, so the
+      // lookup map stayed empty and GetVal()'s std::stof("") threw the first
+      // time an attack window opened against live telemetry.
+      mmsMIM1.SetAttribute("AttackConf", StringValue(configFileName));
+      mmsMIM1.SetAttribute("ID", UintegerValue(MIM_ID));
       mmsMIM1.SetAttribute("AttackSelection", UintegerValue(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"])));
 
       mmsMIM1.SetAttribute("RealVal", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));

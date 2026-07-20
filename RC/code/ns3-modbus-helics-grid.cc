@@ -1102,6 +1102,13 @@ main (int argc, char *argv[])
       modbusMIM1.SetAttribute ("Name", StringValue (enamestring));
       modbusMIM1.SetAttribute("UnitId", UintegerValue(2));
       modbusMIM1.SetAttribute("EnableTCP", BooleanValue (true));
+      // BUG FIX: see identical fix in ns3-helics-grid-dnp3.cc -- handle_MIM()
+      // re-reads AttackConf's JSON at packet-arrival time, keyed by the
+      // object's own MIM_ID attribute, but neither was ever set here, so the
+      // lookup map stayed empty and GetVal()'s std::stof("") threw the first
+      // time an attack window opened against live telemetry.
+      modbusMIM1.SetAttribute("AttackConf", StringValue(configFileName));
+      modbusMIM1.SetAttribute("ID", UintegerValue(MIM_ID));
       modbusMIM1.SetAttribute("AttackSelection", UintegerValue(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"])));
 
       modbusMIM1.SetAttribute("RealVal", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
