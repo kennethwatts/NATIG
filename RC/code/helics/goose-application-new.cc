@@ -251,6 +251,14 @@ GooseApplicationNew::GetTypeId (void)
                    BooleanValue (false),
                    MakeBooleanAccessor (&GooseApplicationNew::mitm_flag),
                    MakeBooleanChecker ())
+    .AddAttribute ("FdiFlag", "Compromised-endpoint false-data-injection flag: the real publisher fabricates its own readings, no rogue instance involved",
+                   BooleanValue (false),
+                   MakeBooleanAccessor (&GooseApplicationNew::fdi_flag),
+                   MakeBooleanChecker ())
+    .AddAttribute ("FdiID", "Int representing the ID of the FDI attacker, indexes into the config's FDI array",
+                   UintegerValue (0),
+                   MakeUintegerAccessor (&GooseApplicationNew::FDI_ID),
+                   MakeUintegerChecker<uint16_t> ())
   ;
   return tid;
 }
@@ -449,6 +457,47 @@ GooseApplicationNew::GetBinaryPoint (const std::string &pointName) const
   return (it != m_deviceConfig.binaryValues.end ()) ? it->second : false;
 }
 
+// Compromised-endpoint FDI: same shape as DNP3/Modbus/MMS's apply_fdi --
+// resolves node_id/point_id/Value_attck/AttackChance attributes (set once at
+// topology build time, no runtime JSON re-read) and returns a fabricated
+// value when they match and the chance roll fires. m_attack_on (window) is
+// checked by the caller. Runs on the real publisher (fdi_flag), not the
+// rogue-publisher role (mitm_flag) -- a fabricated value here flows through
+// the normal publish path, so it naturally trips
+// datasetChangedSinceLastPublish()'s deadband/burst logic exactly like a
+// real physical change would, rather than needing its own stNum-forging
+// logic the way handle_rogue_publish does.
+float
+GooseApplicationNew::apply_fdi (const std::string& name, float realValue)
+{
+  std::string delimiter = ",";
+  std::vector<std::string> nodes = get_val_vector (delimiter, node_id);
+  std::vector<std::string> points = get_val_vector (delimiter, point_id);
+  std::vector<std::string> vals = get_val_vector (delimiter, m_attack_point_val);
+
+  for (size_t i = 0; i < nodes.size () && i < points.size () && i < vals.size (); i++)
+    {
+      std::string nodePoint = nodes[i] + "$" + points[i];
+      if (name.find (nodePoint) == std::string::npos)
+        {
+          continue;
+        }
+
+      float r = static_cast<float>(rand ()) / static_cast<float>(RAND_MAX);
+      if (m_attackChance <= r)
+        {
+          return realValue;
+        }
+
+      float fabricated = std::stof (vals[i]);
+      std::cout << "FDI: publisher " << m_name << " fabricating point " << name << " -> " << fabricated
+                 << " (real value " << realValue << ") at time " << Simulator::Now ().GetSeconds () << "s" << std::endl;
+      return fabricated;
+    }
+
+  return realValue;
+}
+
 // -------------------------------------------------------------------
 // store_points -- called via HELICS's Store() (see DoEndpoint below).
 // Unlike periodic-poll protocols, a real value change here should
@@ -462,7 +511,12 @@ GooseApplicationNew::store_points (std::string name, std::string value)
 {
   if (m_deviceConfig.analogValues.find (name) != m_deviceConfig.analogValues.end ())
     {
-      SetAnalogPoint (name, std::atof (value.c_str ()));
+      float v = std::atof (value.c_str ());
+      if (fdi_flag && m_attack_on)
+        {
+          v = apply_fdi (name, v);
+        }
+      SetAnalogPoint (name, v);
       return;
     }
 
@@ -787,6 +841,13 @@ GooseApplicationNew::StartApplication ()
   NS_LOG_FUNCTION (this);
   running = true;
   m_attack_on = false;
+  if (fdi_flag) {
+    // Unlike handle_rogue_publish (reactive to attack_data's schedule), FDI has
+    // a fixed window on the real publisher itself, so it can be scheduled once
+    // here instead. See DNP3/Modbus/MMS's identical addition.
+    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &GooseApplicationNew::set_attack, this, true);
+    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &GooseApplicationNew::set_attack, this, false);
+  }
   makeMulticastConnection ();
 }
 

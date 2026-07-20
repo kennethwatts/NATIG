@@ -227,6 +227,7 @@ private:
   void Record (Ptr<Packet> packet, Address from);
 
   void store_points (std::string point, std::string value);
+  float apply_fdi (const std::string& name, float realValue);
   void initConfig (void);
   void makeMulticastConnection (void);
   void send_directly (Ptr<Packet> packet);
@@ -292,6 +293,7 @@ private:
   std::vector<std::string> binary_point_names;
 
   bool mitm_flag = false;
+  bool fdi_flag = false; //Compromised-endpoint FDI: the real publisher fabricates its own readings, no rogue instance needed (see DNP3/Modbus/MMS's identical addition)
 
   // -- Attack state: mirrors DNP3/Modbus/MMS's naming exactly for mergeability --
   std::string node_id;
@@ -301,6 +303,7 @@ private:
   std::string m_attack_min;
   uint16_t m_attackType;
   uint16_t MIM_ID;
+  uint16_t FDI_ID;
   std::string m_attackStartTime;
   std::string m_attackEndTime;
   std::vector<std::string> StartVect;
