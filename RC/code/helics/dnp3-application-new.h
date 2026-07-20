@@ -180,6 +180,7 @@ public:
     int count = 0;
     int four = 0;
     bool mitm_flag = false;
+    bool fdi_flag = false; //Compromised-endpoint false-data-injection flag (outstation lies about its own readings; no MITM position needed)
     double m_attackChance = 0.0;
     double m_jitterMinNs; //!<minimum jitter delay time for packets sent via FNCS
     double m_jitterMaxNs; //!<maximum jitter delay time for packets sent via FNCS
@@ -246,6 +247,7 @@ private:
 
 
   void store_points(std::string point, std::string value);
+  float apply_fdi(const std::string& name, float realValue);
   void initConfig(void);
   void makeTcpConnection(void);
   void makeUdpConnection(void);
@@ -312,6 +314,7 @@ private:
   std::string m_attack_min;
   uint16_t m_attackType;
   uint16_t MIM_ID;
+  uint16_t FDI_ID;
   std::string m_attackStartTime;
   std::string m_attackEndTime;
   std::vector<string> StartVect;

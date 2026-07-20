@@ -304,6 +304,14 @@ Dnp3ApplicationNew::GetTypeId (void)
 		    BooleanValue (false),
 		    MakeBooleanAccessor (&Dnp3ApplicationNew::mitm_flag),
 		    MakeBooleanChecker())
+    .AddAttribute ("FdiFlag", "Compromised-endpoint false-data-injection flag: this outstation fabricates its own readings, no MITM position involved",
+		    BooleanValue (false),
+		    MakeBooleanAccessor (&Dnp3ApplicationNew::fdi_flag),
+		    MakeBooleanChecker())
+    .AddAttribute ("FdiID", "Int representing the ID of the FDI attacker, indexes into the config's FDI array",
+		     UintegerValue (0),
+		     MakeUintegerAccessor (&Dnp3ApplicationNew::FDI_ID),
+		     MakeUintegerChecker<uint16_t> ())
   ;
   return tid;
 }
@@ -432,6 +440,13 @@ void Dnp3ApplicationNew::StartApplication ()    // Called at time specified by S
   m_input_select = 0;
   m_victim = 0;
   m_attack_on = false;
+  if (fdi_flag) {
+    // Unlike handle_MIM (reactive to packet arrival), FDI has a fixed window on the
+    // outstation itself, so it can be scheduled once here instead of deduped via
+    // StartVect/StopVect on every store_points() call.
+    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &Dnp3ApplicationNew::set_attack, this, true);
+    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &Dnp3ApplicationNew::set_attack, this, false);
+  }
   NS_LOG_LOGIC("I am is the start application :)");
   if(m_enableTcp)
   {
@@ -898,12 +913,51 @@ void Dnp3ApplicationNew::initConfig(void)
 }
 
 
+// Compromised-endpoint FDI: the outstation fabricates its own reading before it
+// is ever stored, so anything reading analog_points afterward (poll responses,
+// in particular) sees the same lie the "meter" does. Unlike handle_MIM, there is
+// no separate reset step -- once the attack window closes, the next real HELICS
+// update simply overwrites it. m_attack_on (window) is checked by the caller;
+// node_id/point_id/Value_attck/AttackChance are resolved once at topology build
+// time (mirroring how this file's own MIM wiring pre-sets scalar attributes
+// instead of re-reading AttackConf's JSON at runtime -- see the includeMIM block).
+float Dnp3ApplicationNew::apply_fdi(const std::string& name, float realValue)
+{
+    std::string delimiter = ",";
+    std::vector<std::string> nodes = get_val_vector(delimiter, node_id);
+    std::vector<std::string> points = get_val_vector(delimiter, point_id);
+    std::vector<std::string> vals = get_val_vector(delimiter, m_attack_point_val);
+
+    for (size_t i = 0; i < nodes.size() && i < points.size() && i < vals.size(); i++) {
+        std::string nodePoint = nodes[i] + "$" + points[i];
+        if (name.find(nodePoint) == std::string::npos) {
+            continue;
+        }
+
+        float r = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        if (m_attackChance <= r) {
+            return realValue;
+        }
+
+        float fabricated = std::stof(vals[i]);
+        std::cout << "FDI: outstation " << m_name << " fabricating point " << name << " -> " << fabricated
+                   << " (real value " << realValue << ") at time " << Simulator::Now().GetSeconds() << "s" << std::endl;
+        return fabricated;
+    }
+
+    return realValue;
+}
+
 void Dnp3ApplicationNew::store_points(std::string name, std::string value)
 {
 
     if (!analog_points.empty()) {
         if (analog_points.find(name) != analog_points.end()) {
-            analog_points[name] = atof(value.c_str());
+            float v = atof(value.c_str());
+            if (fdi_flag && m_attack_on) {
+                v = apply_fdi(name, v);
+            }
+            analog_points[name] = v;
             //cout << "analog point found: " << name << "New item:" << analog_points[name] << endl;
         } else if (bin_points.find(name) != bin_points.end()) {
             if(value.compare("CLOSED") == 0) {
