@@ -38,8 +38,20 @@ namespace ns3 {
 
 ModbusApplicationHelperNew::ModbusApplicationHelperNew (std::string protocol, Address address)
 {
+  // BUG FIX: this used to also call m_factory.Set("Protocol", ...).
+  // Unlike "LocalAddress" below (a real attribute -- see
+  // ModbusApplicationNew::GetTypeId()), "Protocol" was never registered
+  // there at all. ObjectFactory::Set() on an unknown attribute name is
+  // fatal, aborting the very first time this constructor ever actually
+  // ran. ModbusApplicationNew doesn't need a stored "Protocol" value --
+  // it always uses TCP explicitly via TypeId::LookupByName in
+  // makeTcpConnection, gated by the separate EnableTCP attribute -- so
+  // the protocol string has nothing to be set against. Dropping just
+  // that one Set() call; the parameter stays unused (kept only so
+  // every existing call site's two-argument construction still
+  // compiles unchanged).
+  (void) protocol;
   m_factory.SetTypeId ("ns3::ModbusApplicationNew");
-  m_factory.Set ("Protocol", StringValue (protocol));
   m_factory.Set ("LocalAddress", AddressValue (address));
 }
 

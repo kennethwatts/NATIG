@@ -1018,6 +1018,22 @@ ModbusApplicationNew::makeTcpConnection (void)
 {
   NS_LOG_FUNCTION (this);
 
+  // BUG FIX: mim_socket used to be built and Connect()'d for every
+  // application instance, master and outstation alike. That's fine for
+  // DNP3/UDP (Connect() on a UDP socket just sets a default destination,
+  // effectively a no-op if unused) but not for Modbus/TCP, where
+  // Connect() is a real handshake attempt -- the exact distinction
+  // called out in the outstation Connect()/Listen() fix below. Plain
+  // master/outstation instances never set RemoteAddress2, so it silently
+  // defaulted to 10.0.0.0 (see GetTypeId), meaning every ordinary node
+  // in a real topology was generating a spurious SYN to a bogus address
+  // on every run -- traffic that ends up in FlowMonitor stats alongside
+  // genuine flow-level IDS features. Only Inside/MIM-role instances
+  // actually use this socket, so gate its construction on the same role
+  // check already used elsewhere in this function.
+  bool isInsiderOrMim = (m_name.find ("Inside") != std::string::npos
+                          || m_name.find ("MIM") != std::string::npos);
+
   if (m_socket == 0)
     {
       TypeId tid = TypeId::LookupByName ("ns3::TcpSocketFactory");
@@ -1042,28 +1058,36 @@ ModbusApplicationNew::makeTcpConnection (void)
       // MIM/insider socket, ported from DNP3's makeUdpConnection (see
       // file header note on why this logic moved here from DNP3's UDP
       // path). Bound to m_remoteAddress2/m_remotePort, same pattern.
-      TypeId tid2 = TypeId::LookupByName ("ns3::TcpSocketFactory");
-      mim_socket = Socket::CreateSocket (GetNode (), tid2);
+      // Only built for Inside/MIM-role instances -- see isInsiderOrMim
+      // note above.
+      if (isInsiderOrMim)
+        {
+          TypeId tid2 = TypeId::LookupByName ("ns3::TcpSocketFactory");
+          mim_socket = Socket::CreateSocket (GetNode (), tid2);
 
-      if (Ipv4Address::IsMatchingType (m_remoteAddress2))
-        {
-          InetSocketAddress local2 = InetSocketAddress (Ipv4Address::GetAny (), m_remotePort);
-          mim_socket->Bind (local2);
-        }
-      else if (Ipv6Address::IsMatchingType (m_remoteAddress2))
-        {
-          Inet6SocketAddress local2 = Inet6SocketAddress (Ipv6Address::GetAny (), m_remotePort);
-          mim_socket->Bind (local2);
-        }
-      else
-        {
-          InetSocketAddress local2 = InetSocketAddress (Ipv4Address::GetAny (), m_remotePort);
-          mim_socket->Bind (local2);
+          if (Ipv4Address::IsMatchingType (m_remoteAddress2))
+            {
+              InetSocketAddress local2 = InetSocketAddress (Ipv4Address::GetAny (), m_remotePort);
+              mim_socket->Bind (local2);
+            }
+          else if (Ipv6Address::IsMatchingType (m_remoteAddress2))
+            {
+              Inet6SocketAddress local2 = Inet6SocketAddress (Ipv6Address::GetAny (), m_remotePort);
+              mim_socket->Bind (local2);
+            }
+          else
+            {
+              InetSocketAddress local2 = InetSocketAddress (Ipv4Address::GetAny (), m_remotePort);
+              mim_socket->Bind (local2);
+            }
         }
     }
 
   m_socket->SetRecvCallback (MakeCallback (&ModbusApplicationNew::HandleRead, this));
-  mim_socket->SetRecvCallback (MakeCallback (&ModbusApplicationNew::HandleRead, this));
+  if (mim_socket)
+    {
+      mim_socket->SetRecvCallback (MakeCallback (&ModbusApplicationNew::HandleRead, this));
+    }
 
   // -- Attack start/end time scheduling, ported near-verbatim from --
   // -- DNP3's makeUdpConnection (generic string parsing + Simulator:: --
@@ -1096,7 +1120,7 @@ ModbusApplicationNew::makeTcpConnection (void)
       if (m_isMaster)
         {
           startMaster ();
-          if (m_name.find ("Inside") != std::string::npos || m_name.find ("MIM") != std::string::npos)
+          if (isInsiderOrMim)
             {
               NS_LOG_UNCOND ("ModbusApplication: I'm MIM or Insider Master");
               if (timer[index])
@@ -1113,7 +1137,7 @@ ModbusApplicationNew::makeTcpConnection (void)
         }
       else
         {
-          if (m_name.find ("Inside") != std::string::npos || m_name.find ("MIM") != std::string::npos)
+          if (isInsiderOrMim)
             {
               startMaster ();
               NS_LOG_UNCOND ("ModbusApplication: I'm MIM or Insider Outstation");
@@ -1144,9 +1168,17 @@ ModbusApplicationNew::makeTcpConnection (void)
           // HandleAccept/handle_normal never fired on the outstation
           // and no perf.txt was ever created -- this conflicting
           // Connect()+Listen() usage on the same socket is the reason.
-          mim_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress2), m_localPort));
+          //
+          // mim_socket is now only constructed for Inside/MIM-role
+          // instances (see isInsiderOrMim note above), so guard the
+          // Connect() call with a null check rather than assuming it
+          // exists.
+          if (mim_socket)
+            {
+              mim_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress2), m_localPort));
+            }
           startOutstation (m_socket);
-          if (m_name.find ("Inside") != std::string::npos || m_name.find ("MIM") != std::string::npos)
+          if (isInsiderOrMim)
             {
               startOutstation (mim_socket);
             }
@@ -1196,7 +1228,12 @@ ModbusApplicationNew::ConnectToPeer (Ptr<Socket> localSocket, uint16_t servPort)
     MakeCallback (&ModbusApplicationNew::HandleConnectionFailed, this));
 
   m_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress), m_remotePort));
-  mim_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress2), m_localPort));
+  // mim_socket is only constructed for Inside/MIM-role instances (see
+  // makeTcpConnection's isInsiderOrMim note); guard rather than assume.
+  if (mim_socket)
+    {
+      mim_socket->Connect (InetSocketAddress (Ipv4Address::ConvertFrom (m_remoteAddress2), m_localPort));
+    }
 }
 
 void
@@ -1636,6 +1673,15 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
       // not DNP3's original point-type scheme.
       std::vector<int> ID_point;
       std::vector<std::string> pointID;
+      // BUG FIX: holding-register and coil addresses are independent,
+      // zero-based spaces (see analog_name_to_address/
+      // binary_name_to_address in the header) -- an analog point and a
+      // binary point can legitimately land on the same numeric address.
+      // ID_point alone can't distinguish "holding register 3" from
+      // "coil 3", so track which space each matched entry actually
+      // came from and use it below to avoid matching a request against
+      // the wrong point.
+      std::vector<bool> isAnalogPoint;
       for (const auto& nodePoint : nodesPoints)
         {
           bool found = false;
@@ -1645,6 +1691,7 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                 {
                   ID_point.push_back (i);
                   pointID.push_back (nodePoint);
+                  isAnalogPoint.push_back (true);
                   found = true;
                   break;
                 }
@@ -1657,6 +1704,7 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                     {
                       ID_point.push_back (i);
                       pointID.push_back (nodePoint);
+                      isAnalogPoint.push_back (false);
                       found = true;
                       break;
                     }
@@ -1701,6 +1749,15 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
           responsePdu.functionCode = requestPdu.functionCode;
           responsePdu.address = requestPdu.address;
 
+          // Which address space this request actually targets -- needed
+          // below to avoid matching a holding-register request against a
+          // coil entry (or vice versa) that happens to share the same
+          // numeric address.
+          bool requestIsAnalog = (requestPdu.functionCode == ModbusFunctionCode::READ_HOLDING_REGISTERS
+                                   || requestPdu.functionCode == ModbusFunctionCode::WRITE_SINGLE_REGISTER);
+          bool requestIsBinary = (requestPdu.functionCode == ModbusFunctionCode::READ_COILS
+                                   || requestPdu.functionCode == ModbusFunctionCode::WRITE_SINGLE_COIL);
+
           // -- Find which mapped point (if any) matches this request's --
           // -- address, then decide whether to attack it --
           for (size_t qq = 0; qq < ID_point.size (); qq++)
@@ -1708,6 +1765,23 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
               if (static_cast<uint16_t>(ID_point[qq]) != requestPdu.address)
                 {
                   continue; // this MIM entry doesn't apply to the point being requested
+                }
+
+              // BUG FIX: address alone isn't enough -- confirm the
+              // matched entry's address space (analog/holding-register
+              // vs binary/coil) actually matches what this request is
+              // touching. Without this, an entry mapped to e.g. coil 3
+              // could match an unrelated READ_HOLDING_REGISTERS request
+              // at holding-register address 3, silently applying the
+              // attack to (or basing the attack decision on) the wrong
+              // point. Caught during code review; keep scanning rather
+              // than stop, since a later entry may still be the real
+              // match for this address.
+              bool pointMatchesRequestSpace = (isAnalogPoint[qq] && requestIsAnalog)
+                                               || (!isAnalogPoint[qq] && requestIsBinary);
+              if (!pointMatchesRequestSpace)
+                {
+                  continue;
                 }
 
               float chance = (qq < attackChance.size ()) ? attackChance[qq] : 0.0f;
