@@ -233,6 +233,14 @@ ModbusApplicationNew::GetTypeId (void)
                    BooleanValue (false),
                    MakeBooleanAccessor (&ModbusApplicationNew::mitm_flag),
                    MakeBooleanChecker ())
+    .AddAttribute ("FdiFlag", "Compromised-endpoint false-data-injection flag: this outstation fabricates its own readings, no MITM position involved",
+                   BooleanValue (false),
+                   MakeBooleanAccessor (&ModbusApplicationNew::fdi_flag),
+                   MakeBooleanChecker ())
+    .AddAttribute ("FdiID", "Int representing the ID of the FDI attacker, indexes into the config's FDI array",
+                   UintegerValue (0),
+                   MakeUintegerAccessor (&ModbusApplicationNew::FDI_ID),
+                   MakeUintegerChecker<uint16_t> ())
   ;
   return tid;
 }
@@ -470,6 +478,43 @@ ModbusApplicationNew::GetFrozenCoil (uint16_t address) const
   return (it != m_frozenDeviceConfig.coils.end ()) ? it->second : false;
 }
 
+// Compromised-endpoint FDI: same shape as DNP3's apply_fdi -- resolves
+// node_id/point_id/Value_attck/AttackChance attributes (set once at topology
+// build time, no runtime JSON re-read) and returns a fabricated value when
+// they match and the chance roll fires. m_attack_on (window) is checked by
+// the caller. Restoration is automatic: once the window closes, the next
+// real HELICS update simply overwrites the register again.
+float
+ModbusApplicationNew::apply_fdi (const std::string& name, float realValue)
+{
+  std::string delimiter = ",";
+  std::vector<std::string> nodes = get_val_vector (delimiter, node_id);
+  std::vector<std::string> points = get_val_vector (delimiter, point_id);
+  std::vector<std::string> vals = get_val_vector (delimiter, m_attack_point_val);
+
+  for (size_t i = 0; i < nodes.size () && i < points.size () && i < vals.size (); i++)
+    {
+      std::string nodePoint = nodes[i] + "$" + points[i];
+      if (name.find (nodePoint) == std::string::npos)
+        {
+          continue;
+        }
+
+      float r = static_cast<float>(rand ()) / static_cast<float>(RAND_MAX);
+      if (m_attackChance <= r)
+        {
+          return realValue;
+        }
+
+      float fabricated = std::stof (vals[i]);
+      std::cout << "FDI: outstation " << m_name << " fabricating point " << name << " -> " << fabricated
+                 << " (real value " << realValue << ") at time " << Simulator::Now ().GetSeconds () << "s" << std::endl;
+      return fabricated;
+    }
+
+  return realValue;
+}
+
 // -------------------------------------------------------------------
 // store_points -- called via HELICS's Store() (see DoEndpoint in the
 // HELICS-layer file). DIVERGES from DNP3: translates point name to a
@@ -483,7 +528,12 @@ ModbusApplicationNew::store_points (std::string name, std::string value)
   auto analogIt = analog_name_to_address.find (name);
   if (analogIt != analog_name_to_address.end ())
     {
-      SetHoldingRegister (analogIt->second, static_cast<uint16_t>(std::atof (value.c_str ())));
+      float v = std::atof (value.c_str ());
+      if (fdi_flag && m_attack_on)
+        {
+          v = apply_fdi (name, v);
+        }
+      SetHoldingRegister (analogIt->second, static_cast<uint16_t>(v));
       return;
     }
 
@@ -1000,6 +1050,13 @@ ModbusApplicationNew::StartApplication ()
   NS_LOG_FUNCTION (this);
   running = true;
   m_attack_on = false;
+  if (fdi_flag) {
+    // Unlike handle_MIM (reactive to packet arrival), FDI has a fixed window on the
+    // outstation itself, so it can be scheduled once here instead of deduped via
+    // StartVect/StopVect on every store_points() call. See DNP3's identical addition.
+    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &ModbusApplicationNew::set_attack, this, true);
+    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &ModbusApplicationNew::set_attack, this, false);
+  }
 
   // Modbus TCP is TCP by definition; the EnableTCP attribute is kept
   // for interface consistency with DNP3 but always resolves to TCP

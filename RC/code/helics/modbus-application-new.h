@@ -247,6 +247,7 @@ private:
   void HandleConnectionFailed (Ptr<Socket> socket);
 
   void store_points (std::string point, std::string value);
+  float apply_fdi (const std::string& name, float realValue);
   void initConfig (void);
   void makeTcpConnection (void);
   void resetToRealValue (int pointId, const std::string& realValue);
@@ -317,6 +318,7 @@ private:
   std::map<std::string, uint16_t> binary_name_to_address;
 
   bool mitm_flag = false;
+  bool fdi_flag = false; //Compromised-endpoint FDI: outstation fabricates its own readings, no MITM position needed (see DNP3's identical addition)
 
   // -- Attack state: mirrors DNP3's naming exactly for mergeability --
   std::string node_id;
@@ -326,6 +328,7 @@ private:
   std::string m_attack_min;
   uint16_t m_attackType;
   uint16_t MIM_ID;
+  uint16_t FDI_ID;
   std::string m_attackStartTime;
   std::string m_attackEndTime;
   std::vector<std::string> StartVect;
