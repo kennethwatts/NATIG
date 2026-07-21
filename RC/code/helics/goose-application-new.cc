@@ -1071,7 +1071,8 @@ GooseApplicationNew::HandleRead (Ptr<Socket> socket)
               SetBinaryPoint (entry.first, entry.second);
             }
           std::cout << "GooseApplication (subscriber): accepted goID=" << pdu.goID
-                       << " stNum=" << pdu.stNum << " sqNum=" << pdu.sqNum << std::endl;
+                       << " stNum=" << pdu.stNum << " sqNum=" << pdu.sqNum
+                       << " t=" << Simulator::Now ().GetSeconds () << "s" << std::endl;
         }
       else
         {

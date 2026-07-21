@@ -59,7 +59,7 @@
     3. __ConnectionsPerBot__ (DNP3/Modbus/MMS only): number of TCP connections each bot opens and holds open against the target's real listening socket.
     4. __ConnectRate__ (DNP3/Modbus/MMS only): connections opened per second by each bot -- a low, steady value here is what makes the attack "slow" rather than a same-instant burst of connection attempts.
     5. __TrickleBytes__ / __TrickleInterval__ (DNP3/Modbus/MMS only): bytes sent on each held-open connection every __TrickleInterval__ seconds. Default 0/0.0 (pure silence) is normally sufficient, since none of these protocols' servers enforce an idle-connection timeout today.
-    6. __PacketSize__, __Rate__, __TimeOn__, __TimeOff__ (GOOSE only): same field names as DDoS, but tuned for a continuous low-rate hum on the shared link (e.g. __TimeOn__ covering the whole attack window, __TimeOff__ of 0, and a __Rate__ well below the link's own capacity) instead of DDoS's short burst/long rest pattern.
+    6. __PacketSize__, __Rate__, __TimeOn__, __TimeOff__ (GOOSE only): same field names as DDoS, but tuned for a continuous hum on the shared link (__TimeOn__ covering the whole attack window, __TimeOff__ of 0) instead of DDoS's short burst/long rest pattern. "Slow" here describes the *duty cycle* (sustained vs. bursty), not the absolute __Rate__ -- tested against this repo's GOOSE segments (100Mbps CSMA), a gentle rate (e.g. a few kb/s) produced no measurable effect at all; a sustained rate that's a large fraction of the link's own capacity (e.g. 70Mb/s) was needed before the jammed microgrid showed real queueing delay (worst-case inter-frame gap ~77x the unjammed control's, with effects still measurable for several seconds after the attack window closed). Tune __Rate__ relative to whatever `DataRate` the deployment's own CSMA segment uses, not as a small absolute number.
 
 ```
 "SlowDDoS": [
@@ -80,8 +80,8 @@
             "ConnectRate": 0.5,
             "TrickleBytes": 0,
             "TrickleInterval": 0.0,
-            "PacketSize": 64,
-            "Rate": "8kb/s",
+            "PacketSize": 1400,
+            "Rate": "70Mb/s",
             "TimeOn": 60.0,
             "TimeOff": 0.0
          }

@@ -264,8 +264,8 @@
                     "ConnectRate": 0.5,
                     "TrickleBytes": 0,
                     "TrickleInterval": 0.0,
-                    "PacketSize": 64,
-                    "Rate": "8kb/s",
+                    "PacketSize": 1400,
+                    "Rate": "70Mb/s",
                     "TimeOn": 60.0,
                     "TimeOff": 0.0
             }
