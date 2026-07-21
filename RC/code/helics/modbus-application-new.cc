@@ -1855,12 +1855,28 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
               float startTime = (qq < start.size ()) ? start[qq] : 0.0f;
               float stopTime = (qq < stop.size ()) ? stop[qq] : 0.0f;
               int attackTypeInt = (qq < attackType.size ()) ? static_cast<int>(attackType[qq]) : 0;
+              bool inWindow = (currentTime > startTime && currentTime < stopTime);
 
-              if (currentTime > startTime && currentTime < stopTime && chance > r)
+              // attack_type 5 (replay): outside the window this is real traffic, so keep
+              // refreshing the captured value -- a later window then replays a recent real
+              // observation (frozen once the window opens), not whatever was first ever seen.
+              if (attackTypeInt == 5 && !inWindow)
                 {
-                  NS_LOG_INFO ("ModbusApplication::handle_MIM: applying attack type "
+                  if (isAnalogPoint[qq])
+                    {
+                      m_replayCaptureRegisters[requestPdu.address] = GetHoldingRegister (requestPdu.address);
+                    }
+                  else
+                    {
+                      m_replayCaptureCoils[requestPdu.address] = GetCoil (requestPdu.address);
+                    }
+                }
+
+              if (inWindow && chance > r)
+                {
+                  std::cout << "ModbusApplication::handle_MIM: applying attack type "
                                << attackTypeInt << " on point " << pointID[qq]
-                               << " (address " << requestPdu.address << ") at time " << currentTime << "s");
+                               << " (address " << requestPdu.address << ") at time " << currentTime << "s" << std::endl;
 
                   // -- Attack application: direct point-map mutation --
                   // (replaces DNP3's raw-byte scan + CRC recompute --
@@ -1882,6 +1898,41 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                       SetCoil (requestPdu.address, forcedState);
                       NS_LOG_INFO ("ModbusApplication::handle_MIM: forced coil at address "
                                    << requestPdu.address << " to " << (forcedState ? "ON" : "OFF"));
+                    }
+                  else if (attackTypeInt == 5)
+                    {
+                      // Replay: reinject the frozen pre-window capture instead of the live
+                      // value (or a fabricated one, like type 2/4 would).
+                      if (isAnalogPoint[qq])
+                        {
+                          auto it = m_replayCaptureRegisters.find (requestPdu.address);
+                          if (it != m_replayCaptureRegisters.end ())
+                            {
+                              SetHoldingRegister (requestPdu.address, it->second);
+                              std::cout << "ModbusApplication::handle_MIM: replayed captured register value "
+                                           << it->second << " at address " << requestPdu.address << std::endl;
+                            }
+                          else
+                            {
+                              std::cout << "ModbusApplication::handle_MIM: attack_type 5 fired for address "
+                                           << requestPdu.address << " but no real value was captured yet" << std::endl;
+                            }
+                        }
+                      else
+                        {
+                          auto it = m_replayCaptureCoils.find (requestPdu.address);
+                          if (it != m_replayCaptureCoils.end ())
+                            {
+                              SetCoil (requestPdu.address, it->second);
+                              std::cout << "ModbusApplication::handle_MIM: replayed captured coil value "
+                                           << it->second << " at address " << requestPdu.address << std::endl;
+                            }
+                          else
+                            {
+                              std::cout << "ModbusApplication::handle_MIM: attack_type 5 fired for address "
+                                           << requestPdu.address << " but no real value was captured yet" << std::endl;
+                            }
+                        }
                     }
 
                   attackApplied = true;
