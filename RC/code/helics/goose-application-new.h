@@ -289,6 +289,14 @@ private:
   // (see natig-v2 research notes).
   GooseDeviceConfig m_preAttackAnalogValues;
 
+  // attack_type 5 (replay): most recent legitimate frame accepted per goID
+  // (see HandleRead), captured so a rogue role reusing this same subscriber
+  // instance can later resend it verbatim -- with its original, now-stale
+  // stNum/sqNum, unlike handle_rogue_publish's other attack types which
+  // forge a strictly newer one. A spec-compliant subscriber's own "newest
+  // wins" check (HandleRead) should reject this as stale.
+  std::map<std::string, GoosePDU> m_replayCapture;
+
   bool m_connected;
   Ptr<UniformRandomVariable> m_rand_delay_ns;
 
