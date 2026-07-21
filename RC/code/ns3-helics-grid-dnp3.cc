@@ -1057,11 +1057,21 @@ main (int argc, char *argv[])
 
       if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 3){
          dnp3MIM1.SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
-         dnp3MIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
-         dnp3MIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
+         dnp3MIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"]));
+         dnp3MIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"]));
       }
 
-      dnp3MIM1.SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"])); 
+      // attack_type 5 (replay): doesn't inject a configured Value_attck, but still needs
+      // NodeID/PointID set so handle_MIM can match intercepted packets to the target point
+      // at all -- without this the point-matching loop silently falls through to comparing
+      // against an empty string, which substring-matches whichever analog point happens to
+      // be first in the list rather than the configured target.
+      if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 5){
+         dnp3MIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"]));
+         dnp3MIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"]));
+      }
+
+      dnp3MIM1.SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"]));
       dnp3MIM1.SetAttribute("AttackEndTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-End"])); 
       dnp3MIM1.SetAttribute("mitmFlag", BooleanValue(true));
       Ptr<Dnp3ApplicationNew> mim = dnp3MIM1.Install (tempnode, enamestring);
