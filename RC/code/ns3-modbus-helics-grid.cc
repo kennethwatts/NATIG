@@ -55,6 +55,8 @@
 
 #include "ns3/modbus-application-helper-new.h"
 #include "ns3/modbus-application-new.h"
+#include "ns3/slowloris-bot-application-helper.h"
+#include "ns3/slowloris-bot-application.h"
 
 
 #include "ns3/core-module.h"
@@ -863,6 +865,50 @@ main (int argc, char *argv[])
           ipv4_n.NewNetwork();
   }
 
+  // --- Slow-DDoS (Slowloris-style TCP connection exhaustion) bot nodes ---
+  // Deliberately a separate NodeContainer/link/subnet from the flood-DDoS
+  // bots above, so both attacks can be Active independently. Node/link/
+  // address setup happens here, unconditionally (mirroring how the
+  // flood-DDoS bots above are always created regardless of DDoS.Active),
+  // so it's covered by the single PopulateRoutingTables() call below --
+  // calling PopulateRoutingTables() a second time later in this file
+  // segfaults (confirmed by instrumented testing; this file's own
+  // commented-out second calls at other lines are a pre-existing record
+  // of the same landmine). Application install (which needs `port`,
+  // not yet declared here) happens later, gated on SlowDDoS.Active.
+  int slowDdosNumBots = std::stoi(configObject["SlowDDoS"][0]["NumberOfBots"].asString());
+  int slowDdosNumThreads = std::stoi(configObject["SlowDDoS"][0]["threadsPerAttacker"].asString());
+  int slowDdosNodeID = std::stoi(configObject["SlowDDoS"][0]["NodeID"][0].asString());
+  NodeContainer slowDdosBotNodes;
+  slowDdosBotNodes.Create(slowDdosNumBots);
+  PointToPointHelper p2ph3;
+  p2ph3.SetDeviceAttribute ("DataRate", DataRateValue (DataRate ("100Mbps")));
+  p2ph3.SetChannelAttribute ("Delay", TimeValue (MilliSeconds (std::stoi(topologyConfigObject["Channel"][0]["delay"].asString()))));
+  std::vector<NetDeviceContainer> slowDdosBotDeviceContainer(slowDdosNumBots);
+  std::vector<Ipv4Address> slowDdosVictimAddresses;
+  for (int i = 0; i < slowDdosNumBots; ++i)
+  {
+      Ptr<Node> victimNode;
+      if (configObject["SlowDDoS"][0]["endPoint"].asString().find("CC") != std::string::npos){
+          victimNode = hubNode.Get(0);
+      }
+      else if (configObject["SlowDDoS"][0]["endPoint"].asString().find("subNode") != std::string::npos){
+          victimNode = Microgrid.Get((i%slowDdosNumThreads)+slowDdosNodeID);
+      }
+      else{
+          victimNode = MIMNode.Get((i%slowDdosNumThreads)+slowDdosNodeID);
+      }
+      slowDdosBotDeviceContainer[i] = p2ph3.Install(slowDdosBotNodes.Get(i), victimNode);
+      slowDdosVictimAddresses.push_back(victimNode->GetObject<Ipv4>()->GetAddress(1,0).GetLocal());
+  }
+  internetStack.Install(slowDdosBotNodes);
+  Ipv4AddressHelper ipv4_slowddos;
+  ipv4_slowddos.SetBase("31.0.0.0", "255.255.255.252");
+  for (int j = 0; j < slowDdosNumBots; ++j)
+  {
+      ipv4_slowddos.Assign(slowDdosBotDeviceContainer[j]);
+      ipv4_slowddos.NewNetwork();
+  }
 
   //if (ring){
   Ipv4GlobalRoutingHelper::PopulateRoutingTables();
@@ -1304,6 +1350,37 @@ main (int argc, char *argv[])
      }
 
     std::cout << "Done Setting up the bots " << std::endl;
+
+  // --- Slow-DDoS (Slowloris-style TCP connection exhaustion) app install ---
+  // Node/link/address setup for slowDdosBotNodes already happened earlier
+  // (before the file's single PopulateRoutingTables() call -- see the
+  // comment there for why). This just installs the actual bot application,
+  // holding real TCP connections open against the outstation's listening
+  // socket (port) instead of flooding raw IP packets at a raw socket
+  // victim, gated on SlowDDoS.Active so it's independent of flood-DDoS.
+  std::cout << "Setting up Slow-DDoS bots" << std::endl;
+  bool slowDdosActive = std::stoi(configObject["SlowDDoS"][0]["Active"].asString());
+  if (slowDdosActive) {
+    double slowDdosStart = std::stof(configObject["SlowDDoS"][0]["Start"].asString());
+    double slowDdosEnd = std::stof(configObject["SlowDDoS"][0]["End"].asString());
+    int slowDdosConnectionsPerBot = std::stoi(configObject["SlowDDoS"][0]["ConnectionsPerBot"].asString());
+    double slowDdosConnectRate = std::stof(configObject["SlowDDoS"][0]["ConnectRate"].asString());
+    int slowDdosTrickleBytes = std::stoi(configObject["SlowDDoS"][0]["TrickleBytes"].asString());
+    double slowDdosTrickleInterval = std::stof(configObject["SlowDDoS"][0]["TrickleInterval"].asString());
+
+    for (int i = 0; i < slowDdosNumBots; ++i)
+    {
+        SlowlorisBotApplicationHelper slowDdosHelper (Address(slowDdosVictimAddresses[i]), port);
+        slowDdosHelper.SetAttribute ("ConnectionsPerBot", UintegerValue (slowDdosConnectionsPerBot));
+        slowDdosHelper.SetAttribute ("ConnectRate", DoubleValue (slowDdosConnectRate));
+        slowDdosHelper.SetAttribute ("TrickleBytes", UintegerValue (slowDdosTrickleBytes));
+        slowDdosHelper.SetAttribute ("TrickleInterval", DoubleValue (slowDdosTrickleInterval));
+        ApplicationContainer slowDdosApp = slowDdosHelper.Install (slowDdosBotNodes.Get(i));
+        slowDdosApp.Start (Seconds (slowDdosStart));
+        slowDdosApp.Stop (Seconds (slowDdosEnd));
+    }
+  }
+  std::cout << "Done Setting up Slow-DDoS bots" << std::endl;
 
   //Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
   if(!dirExists(pcapFileDir.c_str())) {
