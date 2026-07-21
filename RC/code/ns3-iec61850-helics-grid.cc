@@ -1146,11 +1146,19 @@ main (int argc, char *argv[])
 
       if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 3){
          mmsMIM1.SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
-         mmsMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
-         mmsMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
+         mmsMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"]));
+         mmsMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"]));
       }
 
-      mmsMIM1.SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"])); 
+      // attack_type 5 (replay): doesn't inject a configured Value_attck, but still needs
+      // NodeID/PointID set so handle_MIM can match intercepted requests to the target point
+      // -- see DNP3's identical addition for why this is required, not optional.
+      if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 5){
+         mmsMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"]));
+         mmsMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"]));
+      }
+
+      mmsMIM1.SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"]));
       mmsMIM1.SetAttribute("AttackEndTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-End"])); 
       mmsMIM1.SetAttribute("mitmFlag", BooleanValue(true));
       Ptr<MmsApplicationNew> mim = mmsMIM1.Install (tempnode, enamestring);
