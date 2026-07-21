@@ -1023,6 +1023,9 @@ GooseApplicationNew::HandleRead (Ptr<Socket> socket)
         {
           m_stNum = pdu.stNum;
           m_sqNum = pdu.sqNum;
+          // attack_type 5 (replay): remember this legitimate frame verbatim, in case a
+          // rogue role reusing this same instance is configured to replay it later.
+          m_replayCapture[pdu.goID] = pdu;
           for (const auto& entry : pdu.analogValues)
             {
               SetAnalogPoint (entry.first, entry.second);
@@ -1248,6 +1251,30 @@ GooseApplicationNew::handle_rogue_publish (void)
   std::vector<std::string> points = get_val_vector (delimiter, point_id);
 
   std::vector<float> attackType = GetVal (attack, "attack_type");
+
+  // attack_type 5 (replay): unlike types 2/3/4 below, this doesn't forge a new,
+  // strictly-newer state -- it resends a real frame captured earlier by this same
+  // instance's own subscriber path (HandleRead), verbatim, including its now-stale
+  // stNum/sqNum. A spec-compliant subscriber should reject it via the same "newest
+  // wins" check that lets the other attack types succeed -- this is the detectability
+  // baseline for GOOSE's built-in anti-replay defense, not a variant expected to win.
+  if (!attackType.empty () && static_cast<int>(attackType[0]) == 5)
+    {
+      auto it = m_replayCapture.find (m_gooseId);
+      if (it == m_replayCapture.end ())
+        {
+          NS_LOG_INFO ("GooseApplication::handle_rogue_publish: attack_type 5 configured but no "
+                       "real frame captured yet for goID=" << m_gooseId);
+          return;
+        }
+      Ptr<Packet> packet = EncodePDU (it->second);
+      send_directly (packet);
+      NS_LOG_INFO ("GooseApplication::handle_rogue_publish: replaying captured frame stNum="
+                   << it->second.stNum << " sqNum=" << it->second.sqNum << " for goID=" << m_gooseId
+                   << " at time " << Simulator::Now ().GetSeconds ()
+                   << "s (expect a spec-compliant subscriber to reject this as stale)");
+      return;
+    }
 
   GoosePDU pdu;
   pdu.goID = m_gooseId;
