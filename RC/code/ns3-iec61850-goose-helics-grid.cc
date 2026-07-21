@@ -1132,6 +1132,18 @@ main (int argc, char *argv[])
 
       rogue->SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"]));
       rogue->SetAttribute("AttackEndTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-End"]));
+
+      // BUG FIX: handle_rogue_publish is only ever reached via DoEndpoint (requires a
+      // HELICS endpoint, which this reused subscriber instance never gets -- only the
+      // real publisher above is wired via SetEndpointName) or attack_data (which was
+      // only ever called on the real publisher, with mitmFlag=false, a few lines above
+      // this loop -- never on the rogue role). Net effect: handle_rogue_publish was
+      // never invoked by any path in this production topology, for any attack type,
+      // not just replay -- this is what iec61850_session_summary.md:164 flagged as
+      // needing independent re-verification before building replay on top of it.
+      // mitm_flag is already true on `rogue` by this point, so attack_data's own
+      // dispatch correctly routes to scheduleRoguePublish.
+      Simulator::Schedule(MilliSeconds(1010), &GooseApplicationNew::attack_data, rogue, 1000);
     }
   }
 
