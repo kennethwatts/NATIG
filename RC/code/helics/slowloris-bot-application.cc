@@ -45,6 +45,14 @@ namespace ns3 {
 
 NS_LOG_COMPONENT_DEFINE ("SlowlorisBotApplication");
 
+// Required so GetTypeId() runs at static-initialization time and
+// registers this TypeId by name -- without it,
+// SlowlorisBotApplicationHelper's m_factory.SetTypeId("ns3::SlowlorisBotApplication")
+// finds nothing registered, and the following m_factory.Set(...) call
+// fails ("Invalid attribute set"). Same gotcha ModbusApplicationNew hit
+// (see its own NS_OBJECT_ENSURE_REGISTERED comment).
+NS_OBJECT_ENSURE_REGISTERED (SlowlorisBotApplication);
+
 TypeId
 SlowlorisBotApplication::GetTypeId (void)
 {
