@@ -1349,6 +1349,13 @@ MmsApplicationNew::HandleAccept (Ptr<Socket> s, const Address& from)
   m_socketList.push_back (s);
   startServer (s);
   NS_LOG_INFO ("MmsApplication: in HandleAccept");
+  // std::cout, not NS_LOG_*: compiled out in this build's optimized
+  // profile. Tracks slow-DDoS connection-exhaustion evidence: this list
+  // has no cap and no idle timeout, so its size should grow and hold for
+  // the attack window.
+  std::cout << "MmsApplication: '" << m_name << "' accepted connection at t="
+            << Simulator::Now ().GetSeconds () << "s, m_socketList.size()="
+            << m_socketList.size () << std::endl;
 }
 
 void
