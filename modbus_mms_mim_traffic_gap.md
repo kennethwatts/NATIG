@@ -116,14 +116,30 @@ immune to whatever this gap turns out to be.
    happened before this session) be treated as suspect pending this gap being
    resolved?
 
+## Related finding, already fixed (not a question for you — included for context)
+
+While validating GOOSE's replay attack after this write-up was drafted, found
+that `handle_rogue_publish` (GOOSE's rogue-publisher MIM attack) had **never
+actually fired in the production topology, for any attack type (2/3/4/5)**,
+independent of the Modbus/MMS issue above and unrelated to `Ipv4L3ProtocolMIM`
+(GOOSE is UDP multicast, no in-path interception). Three compounding bugs, all
+now fixed in commit `9e33913`: the rogue-role detection was a name-substring
+match that never matched the reused-subscriber's actual name; the rogue's
+multicast send target defaulted to an unwired placeholder address; and
+`handle_rogue_publish` was never actually scheduled/invoked by any code path.
+Confirmed working now (19 replay fires, correctly rejected by the
+`stNum`/`sqNum` freshness check throughout a 20s run). Flagging because the
+same "was this actually validated with live traffic, or just assumed working"
+question applies here too — worth double-checking any earlier GOOSE MIM-attack
+results the same way as Modbus/MMS's, since they'd predate this fix.
+
 ## What's committed / where things stand
 
 - `feature/replay` branch has replay (`attack_type 5`) implemented across all
-  four protocols, compiles cleanly, and DNP3 is fully validated end-to-end.
-- Modbus and MMS replay code is complete but unvalidated pending this gap.
-- GOOSE replay (baseline case — replay a captured real frame verbatim,
-  expect the subscriber's `stNum`/`sqNum` freshness check to reject it) is
-  implemented and compiles, not yet run end-to-end.
+  four protocols, compiles cleanly.
+- **DNP3 and GOOSE are fully validated end-to-end.**
+- Modbus and MMS replay code is complete but unvalidated pending the gap
+  described above.
 - Dataset generation can proceed now on what's validated (FDI across all four
   protocols; MIM/replay on DNP3 and GOOSE), with Modbus/MMS MIM-family attacks
   scoped out until this is resolved.
