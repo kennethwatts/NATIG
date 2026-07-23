@@ -891,7 +891,16 @@ main (int argc, char *argv[])
   // are ignored here. No PopulateRoutingTables() ordering concern like
   // the TCP protocols' bots have: the jammer only ever broadcasts within
   // its own directly-connected CSMA segment, never needing a routed path.
-  bool slowDdosActive = std::stoi(configObject["SlowDDoS"][0]["Active"].asString());
+  // Guard against configs written before the SlowDDoS key existed --
+  // isMember() is required because a missing key resolves to an empty
+  // string via jsoncpp, and std::stoi("") throws std::invalid_argument,
+  // crashing at startup on any pre-slow-ddos-era config (e.g. lacked this
+  // key entirely: only had DDoS/MIM). Same gap fixed identically in
+  // ns3-modbus-helics-grid.cc, ns3-iec61850-helics-grid.cc, and
+  // ns3-helics-grid-dnp3-slowddos.cc.
+  bool slowDdosActive = configObject.isMember("SlowDDoS")
+      ? std::stoi(configObject["SlowDDoS"][0]["Active"].asString())
+      : false;
   if (slowDdosActive) {
     double slowDdosStart = std::stof(configObject["SlowDDoS"][0]["Start"].asString());
     double slowDdosEnd = std::stof(configObject["SlowDDoS"][0]["End"].asString());
