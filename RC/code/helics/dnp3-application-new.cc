@@ -29,9 +29,21 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <json/json.h>
-#include <json/forwards.h>
-#include <json/writer.h>
+#if defined(__has_include)
+  #if __has_include(<jsoncpp/json/json.h>)
+    #include <jsoncpp/json/json.h>
+    #include <jsoncpp/json/forwards.h>
+    #include <jsoncpp/json/writer.h>
+  #else
+    #include <json/json.h>
+    #include <json/forwards.h>
+    #include <json/writer.h>
+  #endif
+#else
+  #include <json/json.h>
+  #include <json/forwards.h>
+  #include <json/writer.h>
+#endif
 
 using namespace std;
 
