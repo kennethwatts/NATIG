@@ -273,12 +273,21 @@ private:
   int integrityPollInterval;
 
   GooseDeviceConfig m_deviceConfig;
+
   // Snapshot compared against on each scheduling tick to detect a real
   // state change (drives stNum increment / burst-mode reset) --
   // conceptually similar to the frozen-snapshot mechanism the other
   // protocols use for offline mode, but consulted every tick here
   // rather than only while offline.
   GooseDeviceConfig m_lastPublishedConfig;
+
+  // Snapshot of m_deviceConfig immediately after the CSV load in
+  // initConfig(), used to restore real values once an FDI attack
+  // window ends (set_attack(false)) -- this is the only baseline
+  // that has ever existed for a point, since the HELICS pipeline
+  // that would otherwise refresh these values live never fires
+  // (see natig-v2 research notes).
+  GooseDeviceConfig m_preAttackAnalogValues;
 
   bool m_connected;
   Ptr<UniformRandomVariable> m_rand_delay_ns;

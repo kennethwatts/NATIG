@@ -543,6 +543,33 @@ GooseApplicationNew::set_attack (bool state)
 {
   NS_LOG_INFO ("GooseApplication::set_attack >>> Start Attack Mode: " << m_attackType);
   m_attack_on = state;
+
+  // Option B fix (Sep 2026): apply_fdi was only ever wired into
+  // store_points(), reached exclusively via the HELICS DoEndpoint path --
+  // which never fires in this codebase (see natig-v2 research notes).
+  // Apply FDI directly to the compromised publisher's own dataset at the
+  // moment the attack window opens, so a fabricated value actually
+  // reaches a transmitted PDU. Guarded on fdi_flag specifically (not
+  // just any set_attack toggle) since this function is shared with the
+  // separate rogue/MIM attack mechanism (see StartApplication's isRogue
+  // scheduling above), which must not have its analogValues touched.
+  // Restoring on attack-end matters because nothing else ever refreshes
+  // these values absent a real Store() -- without it the fabricated
+  // value would persist past the window.
+  if (fdi_flag)
+    {
+      if (state)
+        {
+          for (auto& entry : m_deviceConfig.analogValues)
+            {
+              entry.second = apply_fdi (entry.first, entry.second);
+            }
+        }
+      else
+        {
+          m_deviceConfig.analogValues = m_preAttackAnalogValues.analogValues;
+        }
+    }
 }
 
 void
@@ -633,6 +660,8 @@ GooseApplicationNew::initConfig (void)
       NS_LOG_INFO ("Unable to open points file:" << points_filename);
       exit (-1);
     }
+
+  m_preAttackAnalogValues = m_deviceConfig;
 
   NS_LOG_INFO ("GooseApplication::initConfig: loaded " << analog_point_names.size ()
                << " analog points and " << binary_point_names.size () << " binary points");
