@@ -293,6 +293,24 @@ private:
   bool m_connected;
   Ptr<UniformRandomVariable> m_rand_delay_ns;
 
+  // Uses ns-3's own seeded RNG stream (respects --RngRun for real
+  // reproducibility/variation across runs), unlike apply_fdi's
+  // original bare rand()/RAND_MAX, which was never seeded via
+  // srand() anywhere in this codebase -- meaning AttackChance's
+  // roll was silently deterministic (identical outcome every run,
+  // regardless of RngRun) across all four protocols until this fix.
+  Ptr<UniformRandomVariable> m_fdiRand;
+
+  // Snapshot of every analog point's real register value, keyed by point
+  // name (not address -- apply_fdi matches by name), taken at the end of
+  // initConfig() before any attack can run. Modbus has no live name-keyed
+  // analog value map like GOOSE/DNP3/MMS do (its live store is address-keyed
+  // m_deviceConfig.holdingRegisters); this bridges via
+  // analog_name_to_address so set_attack() can restore real values by name
+  // once an FDI attack window ends -- see set_attack() for why restoring is
+  // needed instead of relying on the next real update to overwrite it.
+  std::map<std::string, float> m_preAttackAnalogValues;
+
   TracedCallback<Ptr<const Packet> > m_txTrace;
   TracedCallback<Ptr<const Packet> > m_rxTraces;
   TracedCallback<Ptr<const Packet>, const Address &, const Address &> m_rxTraceWithAddresses;

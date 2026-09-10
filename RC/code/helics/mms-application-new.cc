@@ -251,6 +251,7 @@ MmsApplicationNew::MmsApplicationNew ()
   m_rand_delay_ns = CreateObject<UniformRandomVariable> ();
   m_rand_delay_ns->SetAttribute ("Min", DoubleValue (m_jitterMinNs));
   m_rand_delay_ns->SetAttribute ("Max", DoubleValue (m_jitterMaxNs));
+  m_fdiRand = CreateObject<UniformRandomVariable> ();
 }
 
 MmsApplicationNew::~MmsApplicationNew ()
@@ -492,7 +493,7 @@ MmsApplicationNew::apply_fdi (const std::string& name, float realValue)
           continue;
         }
 
-      float r = static_cast<float>(rand ()) / static_cast<float>(RAND_MAX);
+      float r = m_fdiRand->GetValue (0.0, 1.0);
       if (m_attackChance <= r)
         {
           return realValue;
@@ -555,6 +556,32 @@ MmsApplicationNew::set_attack (bool state)
 {
   NS_LOG_INFO ("MmsApplication::set_attack >>> Start Attack Mode: " << m_attackType);
   m_attack_on = state;
+
+  // Option B fix (Sep 2026): apply_fdi was only ever wired into
+  // store_points(), reached exclusively via the HELICS DoEndpoint path --
+  // which never fires in this codebase (same fix already shipped for
+  // GOOSE/DNP3). Apply FDI directly to this server's own analogValues at
+  // the moment the attack window opens, so a fabricated value actually
+  // reaches a read response. Restoring on attack-end matters because
+  // nothing else ever refreshes these values absent a real Store() --
+  // without it the fabricated value would persist past the window. Guarded
+  // on fdi_flag specifically since set_attack is shared with the separate
+  // rogue/MIM attack mechanism, which must not have its analogValues
+  // touched.
+  if (fdi_flag)
+    {
+      if (state)
+        {
+          for (auto& entry : m_deviceConfig.analogValues)
+            {
+              entry.second = apply_fdi (entry.first, entry.second);
+            }
+        }
+      else
+        {
+          m_deviceConfig.analogValues = m_preAttackAnalogValues;
+        }
+    }
 }
 
 void
@@ -711,6 +738,8 @@ MmsApplicationNew::initConfig (void)
       NS_LOG_INFO ("Unable to open points file:" << points_filename);
       exit (-1);
     }
+
+  m_preAttackAnalogValues = m_deviceConfig.analogValues;
 
   NS_LOG_INFO ("MmsApplication::initConfig: loaded " << analog_point_names.size ()
                << " analog points and " << binary_point_names.size () << " binary points");

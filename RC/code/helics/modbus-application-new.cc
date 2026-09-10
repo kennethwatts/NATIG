@@ -253,6 +253,7 @@ ModbusApplicationNew::ModbusApplicationNew ()
   m_rand_delay_ns = CreateObject<UniformRandomVariable> ();
   m_rand_delay_ns->SetAttribute ("Min", DoubleValue (m_jitterMinNs));
   m_rand_delay_ns->SetAttribute ("Max", DoubleValue (m_jitterMaxNs));
+  m_fdiRand = CreateObject<UniformRandomVariable> ();
 }
 
 ModbusApplicationNew::~ModbusApplicationNew ()
@@ -500,7 +501,7 @@ ModbusApplicationNew::apply_fdi (const std::string& name, float realValue)
           continue;
         }
 
-      float r = static_cast<float>(rand ()) / static_cast<float>(RAND_MAX);
+      float r = m_fdiRand->GetValue (0.0, 1.0);
       if (m_attackChance <= r)
         {
           return realValue;
@@ -561,6 +562,46 @@ ModbusApplicationNew::set_attack (bool state)
 {
   NS_LOG_INFO ("ModbusApplication::set_attack >>> Start Attack Mode: " << m_attackType);
   m_attack_on = state;
+
+  // Option B fix (Sep 2026): apply_fdi was only ever wired into
+  // store_points(), reached exclusively via the HELICS DoEndpoint path --
+  // which never fires in this codebase (same fix already shipped for
+  // GOOSE/DNP3). Apply FDI directly to this outstation's own holding
+  // registers at the moment the attack window opens, so a fabricated value
+  // actually reaches a poll response. Restoring on attack-end matters
+  // because nothing else ever refreshes these values absent a real Store()
+  // -- without it the fabricated value would persist past the window.
+  // Guarded on fdi_flag specifically since set_attack is shared with the
+  // separate rogue/MIM attack mechanism, which must not have its registers
+  // touched.
+  //
+  // Unlike GOOSE/DNP3/MMS, Modbus has no live name-keyed analog value map
+  // -- the real store is address-keyed (m_deviceConfig.holdingRegisters),
+  // so analog_name_to_address bridges name (what apply_fdi matches on) to
+  // address (what Get/SetHoldingRegister operate on).
+  if (fdi_flag)
+    {
+      if (state)
+        {
+          for (const auto& entry : analog_name_to_address)
+            {
+              float v = static_cast<float> (GetHoldingRegister (entry.second));
+              v = apply_fdi (entry.first, v);
+              SetHoldingRegister (entry.second, static_cast<uint16_t> (v));
+            }
+        }
+      else
+        {
+          for (const auto& entry : m_preAttackAnalogValues)
+            {
+              auto it = analog_name_to_address.find (entry.first);
+              if (it != analog_name_to_address.end ())
+                {
+                  SetHoldingRegister (it->second, static_cast<uint16_t> (entry.second));
+                }
+            }
+        }
+    }
 }
 
 void
@@ -762,6 +803,11 @@ ModbusApplicationNew::initConfig (void)
     {
       NS_LOG_INFO ("Unable to open points file:" << points_filename);
       exit (-1);
+    }
+
+  for (const auto& entry : analog_name_to_address)
+    {
+      m_preAttackAnalogValues[entry.first] = static_cast<float> (GetHoldingRegister (entry.second));
     }
 
   NS_LOG_INFO ("ModbusApplication::initConfig: loaded " << analog_point_names.size ()

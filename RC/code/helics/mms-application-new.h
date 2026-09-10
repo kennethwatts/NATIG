@@ -318,6 +318,20 @@ private:
   bool m_connected;
   Ptr<UniformRandomVariable> m_rand_delay_ns;
 
+  // Uses ns-3's own seeded RNG stream (respects --RngRun for real
+  // reproducibility/variation across runs), unlike apply_fdi's
+  // original bare rand()/RAND_MAX, which was never seeded via
+  // srand() anywhere in this codebase -- meaning AttackChance's
+  // roll was silently deterministic (identical outcome every run,
+  // regardless of RngRun) across all four protocols until this fix.
+  Ptr<UniformRandomVariable> m_fdiRand;
+
+  // Snapshot of m_deviceConfig.analogValues taken at the end of initConfig()
+  // (before any attack can run), used by set_attack() to restore real values
+  // once an FDI attack window ends -- see set_attack() for why this is
+  // needed instead of relying on the next real update to overwrite it.
+  std::map<std::string, float> m_preAttackAnalogValues;
+
   TracedCallback<Ptr<const Packet> > m_txTrace;
   TracedCallback<Ptr<const Packet> > m_rxTraces;
   TracedCallback<Ptr<const Packet>, const Address &, const Address &> m_rxTraceWithAddresses;
