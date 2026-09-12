@@ -60,6 +60,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include "ns3/packet.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/inet6-socket-address.h"
@@ -457,6 +458,13 @@ ModbusApplicationNew::GetCoil (uint16_t address) const
 }
 
 uint16_t
+ModbusApplicationNew::GetRegisterScale (uint16_t address) const
+{
+  auto it = m_registerScale.find (address);
+  return (it != m_registerScale.end ()) ? it->second : 1;
+}
+
+uint16_t
 ModbusApplicationNew::GetFrozenHoldingRegister (uint16_t address) const
 {
   auto it = m_frozenDeviceConfig.holdingRegisters.find (address);
@@ -483,7 +491,9 @@ ModbusApplicationNew::store_points (std::string name, std::string value)
   auto analogIt = analog_name_to_address.find (name);
   if (analogIt != analog_name_to_address.end ())
     {
-      SetHoldingRegister (analogIt->second, static_cast<uint16_t>(std::atof (value.c_str ())));
+      uint16_t addr = analogIt->second;
+      float v = static_cast<float>(std::atof (value.c_str ()));
+      SetHoldingRegister (addr, static_cast<uint16_t>(std::round (v / GetRegisterScale (addr))));
       return;
     }
 
@@ -616,7 +626,7 @@ ModbusApplicationNew::resetToRealValue (int pointId, const std::string& realValu
       try
         {
           float f = std::stof (realValue);
-          SetHoldingRegister (address, static_cast<uint16_t>(f));
+          SetHoldingRegister (address, static_cast<uint16_t>(std::round (f / GetRegisterScale (address))));
           NS_LOG_INFO ("ModbusApplication::resetToRealValue: reset register " << pointId
                        << " to " << f << " at time " << currentTime << "s");
         }
@@ -641,6 +651,21 @@ ModbusApplicationNew::resetToRealValue (int pointId, const std::string& realValu
                    << " to " << (coilState ? "ON" : "OFF") << " (from \"" << realValue
                    << "\") at time " << currentTime << "s");
     }
+}
+
+// -- Analog points that must stay exact integers (discrete regulator --
+// -- step positions), rather than the x4-scaled continuous quantities --
+// -- everything else gets -- see m_registerScale / GetRegisterScale. --
+// -- Point names are "objId$variable" (optionally "$variable.real"/  --
+// -- ".imag"); tap/capacitor points are never suffixed, so a plain    --
+// -- suffix match on the substring after the last '$' is sufficient. --
+static bool
+IsUnscaledAnalogPoint (const std::string& pointName)
+{
+  auto delimPos = pointName.rfind ('$');
+  std::string variable = (delimPos != std::string::npos) ? pointName.substr (delimPos + 1) : pointName;
+  return variable == "tap_A" || variable == "tap_B" || variable == "tap_C"
+      || variable == "capacitor_A" || variable == "capacitor_B" || variable == "capacitor_C";
 }
 
 // ==================== from modbus-init-config.cc ====================
@@ -674,7 +699,13 @@ ModbusApplicationNew::initConfig (void)
 
                   uint16_t addr = nextAnalogAddress++;
                   analog_name_to_address[pointName] = addr;
-                  m_deviceConfig.holdingRegisters[addr] = static_cast<uint16_t>(std::stof (row.geti (2)));
+                  if (!IsUnscaledAnalogPoint (pointName))
+                    {
+                      m_registerScale[addr] = 4;
+                    }
+                  float initialValue = std::stof (row.geti (2));
+                  m_deviceConfig.holdingRegisters[addr] =
+                    static_cast<uint16_t>(std::round (initialValue / GetRegisterScale (addr)));
                 }
               else if (row.geti (0).compare ("BINARY") == 0)
                 {
@@ -1802,9 +1833,17 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                     {
                       // False data injection on a register (analog-equivalent)
                       float f = get_val (val, val_min, val_max, qq);
-                      SetHoldingRegister (requestPdu.address, static_cast<uint16_t>(f));
-                      NS_LOG_INFO ("ModbusApplication::handle_MIM: injected false register value "
-                                   << f << " at address " << requestPdu.address);
+                      uint16_t scale = GetRegisterScale (requestPdu.address);
+                      SetHoldingRegister (requestPdu.address, static_cast<uint16_t>(std::round (f / scale)));
+                      float reconstructed = static_cast<float>(GetHoldingRegister (requestPdu.address)) * scale;
+                      // std::cout, not NS_LOG_*: compiled out in this build's optimized
+                      // profile (see feedback_ns3_build_environment_gotchas.md) -- this
+                      // line is the scale-fix validation evidence, so it must actually
+                      // print, not silently no-op.
+                      std::cout << "ModbusApplication::handle_MIM: injected false register value "
+                                << f << " at address " << requestPdu.address
+                                << " (scale " << scale << ", register readback reconstructs to "
+                                << reconstructed << ")" << std::endl;
                     }
                   else if (attackTypeInt == 3)
                     {
