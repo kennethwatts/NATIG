@@ -307,6 +307,15 @@ private:
   // PR #5.
   std::map<uint16_t, uint16_t> m_registerScale;
 
+  // attack_type 5 (replay): last real value captured per address, frozen once
+  // that point's attack window opens. Distinct from m_frozenDeviceConfig above
+  // (that's a whole-device offline snapshot); this is per-point and keyed by
+  // the attack config, not device state. Deliberately scale-agnostic (see
+  // handle_MIM): moves raw register bits verbatim, same as a real replay
+  // capture would.
+  std::map<uint16_t, uint16_t> m_replayCaptureRegisters;
+  std::map<uint16_t, bool> m_replayCaptureCoils;
+
   bool m_enableTcp;
   bool m_connected;
   Ptr<UniformRandomVariable> m_rand_delay_ns;

@@ -596,9 +596,20 @@ ModbusApplicationNew::set_attack (bool state)
             {
               uint16_t addr = entry.second;
               uint16_t scale = GetRegisterScale (addr);
-              float v = static_cast<float> (GetHoldingRegister (addr)) * scale;
-              v = apply_fdi (entry.first, v);
+              float real = static_cast<float> (GetHoldingRegister (addr)) * scale;
+              float v = apply_fdi (entry.first, real);
               SetHoldingRegister (addr, static_cast<uint16_t> (std::round (v / scale)));
+              if (v != real)
+                {
+                  // Scale-fix validation evidence for the FDI fabrication path (see
+                  // handle_MIM's identical readback check): confirms the register,
+                  // once read back and re-scaled, reproduces the fabricated value
+                  // apply_fdi actually returned, not a truncated/overflowed one.
+                  float reconstructed = static_cast<float> (GetHoldingRegister (addr)) * scale;
+                  std::cout << "ModbusApplication::set_attack: FDI register readback for "
+                            << entry.first << " reconstructs to " << reconstructed
+                            << " (scale " << scale << ")" << std::endl;
+                }
             }
         }
       else
@@ -1420,6 +1431,14 @@ ModbusApplicationNew::HandleAccept (Ptr<Socket> s, const Address& from)
   m_socketList.push_back (s);
   startOutstation (s);
   NS_LOG_INFO ("ModbusApplication: in HandleAccept");
+
+  // std::cout, not NS_LOG_*: compiled out in this build's optimized
+  // profile (see feedback_ns3_build_environment_gotchas.md). Tracks
+  // slow-DDoS connection-exhaustion evidence: this list has no cap and no
+  // idle timeout, so its size should grow and hold for the attack window.
+  std::cout << "ModbusApplication: '" << m_name << "' accepted connection at t="
+            << Simulator::Now ().GetSeconds () << "s, m_socketList.size()="
+            << m_socketList.size () << std::endl;
 }
 
 void
@@ -1936,7 +1955,24 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
               float stopTime = (qq < stop.size ()) ? stop[qq] : 0.0f;
               int attackTypeInt = (qq < attackType.size ()) ? static_cast<int>(attackType[qq]) : 0;
 
-              if (currentTime > startTime && currentTime < stopTime && chance > r)
+              bool inWindow = (currentTime > startTime && currentTime < stopTime);
+
+              // attack_type 5 (replay): outside the window this is real traffic, so keep
+              // refreshing the captured value -- a later window then replays a recent real
+              // observation (frozen once the window opens), not whatever was first ever seen.
+              if (attackTypeInt == 5 && !inWindow)
+                {
+                  if (isAnalogPoint[qq])
+                    {
+                      m_replayCaptureRegisters[requestPdu.address] = GetHoldingRegister (requestPdu.address);
+                    }
+                  else
+                    {
+                      m_replayCaptureCoils[requestPdu.address] = GetCoil (requestPdu.address);
+                    }
+                }
+
+              if (inWindow && chance > r)
                 {
                   NS_LOG_INFO ("ModbusApplication::handle_MIM: applying attack type "
                                << attackTypeInt << " on point " << pointID[qq]
@@ -1970,6 +2006,43 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                       SetCoil (requestPdu.address, forcedState);
                       NS_LOG_INFO ("ModbusApplication::handle_MIM: forced coil at address "
                                    << requestPdu.address << " to " << (forcedState ? "ON" : "OFF"));
+                    }
+                  else if (attackTypeInt == 5)
+                    {
+                      // Replay: reinject the frozen pre-window capture instead of the live
+                      // value (or a fabricated one, like type 2/4 would).
+                      // std::cout, not NS_LOG_*: compiled out in this build's optimized
+                      // profile (see feedback_ns3_build_environment_gotchas.md).
+                      if (isAnalogPoint[qq])
+                        {
+                          auto it = m_replayCaptureRegisters.find (requestPdu.address);
+                          if (it != m_replayCaptureRegisters.end ())
+                            {
+                              SetHoldingRegister (requestPdu.address, it->second);
+                              std::cout << "ModbusApplication::handle_MIM: replayed captured register value "
+                                        << it->second << " at address " << requestPdu.address << std::endl;
+                            }
+                          else
+                            {
+                              std::cout << "ModbusApplication::handle_MIM: attack_type 5 fired for address "
+                                        << requestPdu.address << " but no real value was captured yet" << std::endl;
+                            }
+                        }
+                      else
+                        {
+                          auto it = m_replayCaptureCoils.find (requestPdu.address);
+                          if (it != m_replayCaptureCoils.end ())
+                            {
+                              SetCoil (requestPdu.address, it->second);
+                              std::cout << "ModbusApplication::handle_MIM: replayed captured coil value "
+                                        << it->second << " at address " << requestPdu.address << std::endl;
+                            }
+                          else
+                            {
+                              std::cout << "ModbusApplication::handle_MIM: attack_type 5 fired for address "
+                                        << requestPdu.address << " but no real value was captured yet" << std::endl;
+                            }
+                        }
                     }
 
                   attackApplied = true;
