@@ -449,12 +449,12 @@ safeStof (const std::string& s, float defaultValue, const std::string& context)
     try {
         return std::stof (s);
     } catch (const std::invalid_argument&) {
-        NS_LOG_WARN (context << ": could not parse '" << s << "' as a float, using default "
-                     << defaultValue);
+        std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a float, using default "
+                     << defaultValue << std::endl;
         return defaultValue;
     } catch (const std::out_of_range&) {
-        NS_LOG_WARN (context << ": value '" << s << "' out of range for float, using default "
-                     << defaultValue);
+        std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for float, using default "
+                     << defaultValue << std::endl;
         return defaultValue;
     }
 }
@@ -465,12 +465,12 @@ safeStod (const std::string& s, double defaultValue, const std::string& context)
     try {
         return std::stod (s);
     } catch (const std::invalid_argument&) {
-        NS_LOG_WARN (context << ": could not parse '" << s << "' as a double, using default "
-                     << defaultValue);
+        std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a double, using default "
+                     << defaultValue << std::endl;
         return defaultValue;
     } catch (const std::out_of_range&) {
-        NS_LOG_WARN (context << ": value '" << s << "' out of range for double, using default "
-                     << defaultValue);
+        std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for double, using default "
+                     << defaultValue << std::endl;
         return defaultValue;
     }
 }
@@ -492,9 +492,9 @@ void Dnp3ApplicationNew::StartApplication ()    // Called at time specified by S
     double attackStart = safeStod (m_attackStartTime, -1.0, "FDI AttackStartTime");
     double attackEnd = safeStod (m_attackEndTime, -1.0, "FDI AttackEndTime");
     if (attackStart < 0.0 || attackEnd < 0.0) {
-        NS_LOG_WARN ("Dnp3ApplicationNew::StartApplication: bad FDI AttackStartTime/"
+        std::cerr << "[WARN] " << "Dnp3ApplicationNew::StartApplication: bad FDI AttackStartTime/"
                      "AttackEndTime config value for node " << m_name
-                     << " -- FDI disabled for this instance.");
+                     << " -- FDI disabled for this instance." << std::endl;
     } else {
         Simulator::Schedule(Seconds(attackStart), &Dnp3ApplicationNew::set_attack, this, true);
         Simulator::Schedule(Seconds(attackEnd), &Dnp3ApplicationNew::set_attack, this, false);

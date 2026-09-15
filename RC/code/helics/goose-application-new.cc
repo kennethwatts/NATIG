@@ -485,14 +485,14 @@ safeStof (const std::string& s, float defaultValue, const std::string& context)
     }
   catch (const std::invalid_argument&)
     {
-      NS_LOG_WARN (context << ": could not parse '" << s << "' as a float, using default "
-                   << defaultValue);
+      std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a float, using default "
+                   << defaultValue << std::endl;
       return defaultValue;
     }
   catch (const std::out_of_range&)
     {
-      NS_LOG_WARN (context << ": value '" << s << "' out of range for float, using default "
-                   << defaultValue);
+      std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for float, using default "
+                   << defaultValue << std::endl;
       return defaultValue;
     }
 }
@@ -506,14 +506,14 @@ safeStod (const std::string& s, double defaultValue, const std::string& context)
     }
   catch (const std::invalid_argument&)
     {
-      NS_LOG_WARN (context << ": could not parse '" << s << "' as a double, using default "
-                   << defaultValue);
+      std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a double, using default "
+                   << defaultValue << std::endl;
       return defaultValue;
     }
   catch (const std::out_of_range&)
     {
-      NS_LOG_WARN (context << ": value '" << s << "' out of range for double, using default "
-                   << defaultValue);
+      std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for double, using default "
+                   << defaultValue << std::endl;
       return defaultValue;
     }
 }
@@ -929,9 +929,9 @@ GooseApplicationNew::StartApplication ()
     double attackEnd = safeStod (m_attackEndTime, -1.0, "FDI AttackEndTime");
     if (attackStart < 0.0 || attackEnd < 0.0)
       {
-        NS_LOG_WARN ("GooseApplicationNew::StartApplication: bad FDI AttackStartTime/"
+        std::cerr << "[WARN] " << "GooseApplicationNew::StartApplication: bad FDI AttackStartTime/"
                      "AttackEndTime config value for node " << m_name
-                     << " -- FDI disabled for this instance.");
+                     << " -- FDI disabled for this instance." << std::endl;
       }
     else
       {
