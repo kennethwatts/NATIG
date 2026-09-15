@@ -26,6 +26,7 @@
 #include <sstream>
 #include <algorithm>
 #include <string>
+#include <stdexcept>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -432,6 +433,48 @@ Dnp3ApplicationNew::SetLocal (Ipv6Address ip, uint16_t port)
   m_localPort = port;
 }
 
+// safeStof/safeStod -- FDI config values (Value_attck, AttackStartTime,
+// AttackEndTime) come from grid.json/AttackConf and can be malformed or
+// empty; std::stof/std::stod throw std::invalid_argument/std::out_of_range
+// uncaught on that, crashing the whole simulation. This is the same crash
+// class the MIM GetVal guard (see fix/dnp3-getval-crash) closes -- see PR
+// review from Oceane Bel (PNNL) on the FDI PR. Duplicated per protocol file,
+// matching this file's existing convention (e.g. get_val_vector) of no
+// shared helics helper header. Declared here (above StartApplication) rather
+// than just above apply_fdi, since StartApplication -- which also needs it --
+// appears earlier in this file than apply_fdi does.
+static float
+safeStof (const std::string& s, float defaultValue, const std::string& context)
+{
+    try {
+        return std::stof (s);
+    } catch (const std::invalid_argument&) {
+        NS_LOG_WARN (context << ": could not parse '" << s << "' as a float, using default "
+                     << defaultValue);
+        return defaultValue;
+    } catch (const std::out_of_range&) {
+        NS_LOG_WARN (context << ": value '" << s << "' out of range for float, using default "
+                     << defaultValue);
+        return defaultValue;
+    }
+}
+
+static double
+safeStod (const std::string& s, double defaultValue, const std::string& context)
+{
+    try {
+        return std::stod (s);
+    } catch (const std::invalid_argument&) {
+        NS_LOG_WARN (context << ": could not parse '" << s << "' as a double, using default "
+                     << defaultValue);
+        return defaultValue;
+    } catch (const std::out_of_range&) {
+        NS_LOG_WARN (context << ": value '" << s << "' out of range for double, using default "
+                     << defaultValue);
+        return defaultValue;
+    }
+}
+
 // Application Methods
 void Dnp3ApplicationNew::StartApplication ()    // Called at time specified by Start
 {
@@ -446,8 +489,16 @@ void Dnp3ApplicationNew::StartApplication ()    // Called at time specified by S
     // Unlike handle_MIM (reactive to packet arrival), FDI has a fixed window on the
     // outstation itself, so it can be scheduled once here instead of deduped via
     // StartVect/StopVect on every store_points() call.
-    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &Dnp3ApplicationNew::set_attack, this, true);
-    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &Dnp3ApplicationNew::set_attack, this, false);
+    double attackStart = safeStod (m_attackStartTime, -1.0, "FDI AttackStartTime");
+    double attackEnd = safeStod (m_attackEndTime, -1.0, "FDI AttackEndTime");
+    if (attackStart < 0.0 || attackEnd < 0.0) {
+        NS_LOG_WARN ("Dnp3ApplicationNew::StartApplication: bad FDI AttackStartTime/"
+                     "AttackEndTime config value for node " << m_name
+                     << " -- FDI disabled for this instance.");
+    } else {
+        Simulator::Schedule(Seconds(attackStart), &Dnp3ApplicationNew::set_attack, this, true);
+        Simulator::Schedule(Seconds(attackEnd), &Dnp3ApplicationNew::set_attack, this, false);
+    }
   }
   NS_LOG_LOGIC("I am is the start application :)");
   if(m_enableTcp)
@@ -943,7 +994,7 @@ float Dnp3ApplicationNew::apply_fdi(const std::string& name, float realValue)
             return realValue;
         }
 
-        float fabricated = std::stof(vals[i]);
+        float fabricated = safeStof(vals[i], realValue, "apply_fdi Value_attck");
         std::cout << "FDI: outstation " << m_name << " fabricating point " << name << " -> " << fabricated
                    << " (real value " << realValue << ") at time " << Simulator::Now().GetSeconds() << "s" << std::endl;
         return fabricated;

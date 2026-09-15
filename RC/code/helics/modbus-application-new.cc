@@ -61,6 +61,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <stdexcept>
 #include "ns3/packet.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/inet6-socket-address.h"
@@ -487,6 +488,55 @@ ModbusApplicationNew::GetFrozenCoil (uint16_t address) const
   return (it != m_frozenDeviceConfig.coils.end ()) ? it->second : false;
 }
 
+// safeStof/safeStod -- FDI config values (Value_attck, AttackStartTime,
+// AttackEndTime) come from grid.json/AttackConf and can be malformed or
+// empty; std::stof/std::stod throw std::invalid_argument/std::out_of_range
+// uncaught on that, crashing the whole simulation. This is the same crash
+// class the MIM GetVal guard above closes -- see PR review from Oceane Bel
+// (PNNL) on the FDI PR. Duplicated per protocol file, matching this file's
+// existing convention (e.g. get_val_vector) of no shared helics helper header.
+static float
+safeStof (const std::string& s, float defaultValue, const std::string& context)
+{
+  try
+    {
+      return std::stof (s);
+    }
+  catch (const std::invalid_argument&)
+    {
+      NS_LOG_WARN (context << ": could not parse '" << s << "' as a float, using default "
+                   << defaultValue);
+      return defaultValue;
+    }
+  catch (const std::out_of_range&)
+    {
+      NS_LOG_WARN (context << ": value '" << s << "' out of range for float, using default "
+                   << defaultValue);
+      return defaultValue;
+    }
+}
+
+static double
+safeStod (const std::string& s, double defaultValue, const std::string& context)
+{
+  try
+    {
+      return std::stod (s);
+    }
+  catch (const std::invalid_argument&)
+    {
+      NS_LOG_WARN (context << ": could not parse '" << s << "' as a double, using default "
+                   << defaultValue);
+      return defaultValue;
+    }
+  catch (const std::out_of_range&)
+    {
+      NS_LOG_WARN (context << ": value '" << s << "' out of range for double, using default "
+                   << defaultValue);
+      return defaultValue;
+    }
+}
+
 // Compromised-endpoint FDI: same shape as DNP3's apply_fdi -- resolves
 // node_id/point_id/Value_attck/AttackChance attributes (set once at topology
 // build time, no runtime JSON re-read) and returns a fabricated value when
@@ -515,7 +565,7 @@ ModbusApplicationNew::apply_fdi (const std::string& name, float realValue)
           return realValue;
         }
 
-      float fabricated = std::stof (vals[i]);
+      float fabricated = safeStof (vals[i], realValue, "apply_fdi Value_attck");
       std::cout << "FDI: outstation " << m_name << " fabricating point " << name << " -> " << fabricated
                  << " (real value " << realValue << ") at time " << Simulator::Now ().GetSeconds () << "s" << std::endl;
       return fabricated;
@@ -1145,8 +1195,19 @@ ModbusApplicationNew::StartApplication ()
     // Unlike handle_MIM (reactive to packet arrival), FDI has a fixed window on the
     // outstation itself, so it can be scheduled once here instead of deduped via
     // StartVect/StopVect on every store_points() call. See DNP3's identical addition.
-    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &ModbusApplicationNew::set_attack, this, true);
-    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &ModbusApplicationNew::set_attack, this, false);
+    double attackStart = safeStod (m_attackStartTime, -1.0, "FDI AttackStartTime");
+    double attackEnd = safeStod (m_attackEndTime, -1.0, "FDI AttackEndTime");
+    if (attackStart < 0.0 || attackEnd < 0.0)
+      {
+        NS_LOG_WARN ("ModbusApplicationNew::StartApplication: bad FDI AttackStartTime/"
+                     "AttackEndTime config value for node " << m_name
+                     << " -- FDI disabled for this instance.");
+      }
+    else
+      {
+        Simulator::Schedule(Seconds(attackStart), &ModbusApplicationNew::set_attack, this, true);
+        Simulator::Schedule(Seconds(attackEnd), &ModbusApplicationNew::set_attack, this, false);
+      }
   }
 
   // Modbus TCP is TCP by definition; the EnableTCP attribute is kept
