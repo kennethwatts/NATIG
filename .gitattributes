@@ -1,0 +1,17 @@
+* text=auto
+
+*.cc text
+*.h text
+*.py text
+*.md text
+*.json text
+*.glm text
+*.csv text
+
+*.pcap -text
+*.png -text
+*.bin -text
+RC/code/dnp3/crypto/update_key -text
+RC/code/dnp3/crypto/session_key -text
+patch/dnp3/crypto/update_key -text
+patch/dnp3/crypto/session_key -text
