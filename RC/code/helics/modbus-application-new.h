@@ -252,6 +252,12 @@ private:
   void resetToRealValue (int pointId, const std::string& realValue);
   void save_data (Ptr<Socket> socket, Ptr<Packet> packet, Address from);
 
+  // Per-address analog register scale factor: raw register value =
+  // round(engineering value / scale); engineering value = raw register
+  // value * scale. Looks up m_registerScale, defaulting to 1 (unscaled)
+  // for any address not present -- see m_registerScale below.
+  uint16_t GetRegisterScale (uint16_t address) const;
+
   // -- Modbus PDU encode/decode (from-scratch, replaces DNP3's --
   // -- link-layer parsing done inside the vendored library) --
   ModbusPDU DecodePDU (Ptr<Packet> packet, bool isResponse = false);
@@ -287,6 +293,18 @@ private:
   // hardcoded 0/false, mirroring DNP3's frozen_analog_points/
   // frozen_bin_points mechanism.
   ModbusDeviceConfig m_frozenDeviceConfig;
+
+  // Per-address analog register scale (see GetRegisterScale). Populated
+  // once in initConfig() at the point each analog point's address is
+  // assigned: 4 for ordinary continuous engineering quantities (gives
+  // headroom to 262,140 at +-2 unit register resolution -- comfortably
+  // past known FDI attack magnitudes and real GridLAB-D voltage/current
+  // values that overflow a raw 16-bit register), 1 (i.e. absent, see
+  // default in GetRegisterScale) for tap_A/B/C and capacitor_A/B/C,
+  // which are discrete regulator step positions that must stay exact
+  // integers. Fixes truncation/overflow flagged by Oceane Bel (PNNL) on
+  // PR #5.
+  std::map<uint16_t, uint16_t> m_registerScale;
 
   bool m_enableTcp;
   bool m_connected;

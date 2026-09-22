@@ -34,8 +34,14 @@
  *
  * Expected result: TestRegister1's real value is 100. With the attack
  * active for the whole run (PointStart=0, PointStop=30, chance=1.0),
- * every register-1 poll should return 9999 (the injected value, from
- * Value_attck) instead of 100.
+ * every register-1 poll should return 132000 (the injected value, from
+ * Value_attck) instead of 100. 132000 matches a real configured FDI
+ * attack magnitude seen in recorder output, and exceeds a raw 16-bit
+ * register's 65535 range -- exercising the analog register scale fix
+ * (m_registerScale/GetRegisterScale in modbus-application-new.cc):
+ * handle_MIM's ModbusApplication::handle_MIM log line should show the
+ * injected value reconstructing from the scaled register readback to
+ * within +-2*scale of 132000.
  *
  * Portions of this file were drafted with AI assistance (Claude,
  * Anthropic) and reviewed/adapted by the author.
@@ -117,7 +123,7 @@ main (int argc, char *argv[])
   modbusOutstation.SetAttribute ("ID", UintegerValue (1)); // MIM_ID, matches JSON array index 1
   modbusOutstation.SetAttribute ("NodeID", StringValue ("Node1"));
   modbusOutstation.SetAttribute ("PointID", StringValue ("TestRegister1"));
-  modbusOutstation.SetAttribute ("Value_attck", StringValue ("9999"));
+  modbusOutstation.SetAttribute ("Value_attck", StringValue ("132000"));
   modbusOutstation.SetAttribute ("RealVal", StringValue ("100"));
 
   Ptr<ModbusApplicationNew> outstation =
