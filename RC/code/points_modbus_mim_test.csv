@@ -1,0 +1,4 @@
+ANALOG,Node1$TestRegister1,100
+ANALOG,Node1$TestRegister2,250
+BINARY,Node1$TestCoil1,0
+BINARY,Node1$TestCoil2,1
