@@ -15,12 +15,37 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- * Adapted for Modbus TCP support, derived from the original DNP3/UDP
- * file (ns3-helics-grid-dnp3.cc) by:
+ * Adapted for GOOSE (IEC 61850-8-1) support, derived from
+ * ns3-iec61850-helics-grid.cc (per-protocol convention: build each new
+ * protocol's topology file from the most recently added protocol's,
+ * not the original DNP3/UDP file, since portability/correctness fixes
+ * accumulate) by:
  *   Author: Joon-Seok Kim <joonseok.kim@pnnl.gov>
  *   Author: Oceane Bel
- * -- see file comments throughout for the specific protocol-specific
- * conversions made for this adaptation.
+ *
+ * Unlike DNP3/Modbus/MMS's client-server install sites, GOOSE
+ * fundamentally needs a shared, multicast-capable segment rather than
+ * a point-to-point link -- see goose-application-new.h's design note.
+ * One real topology change was necessary as a result: the per-microgrid
+ * link between the substation node (Microgrid.Get(i)) and its
+ * insider/MIM node (MIMNode.Get(i)) is CSMA here instead of the
+ * PointToPointHelper link every other protocol's copy of this file
+ * uses for that same pair -- a point-to-point link can only ever carry
+ * traffic between exactly those two nodes and doesn't model a shared
+ * broadcast medium, so it can't carry real multicast the way GOOSE
+ * requires. This is a change local to this file only; the other
+ * protocols' own copies of this ~1000-line shared structure are
+ * untouched.
+ *
+ * The substation node (Microgrid.Get(i)) is the legitimate GOOSE
+ * publisher; its insider/MIM node (MIMNode.Get(i)) is always installed
+ * as the legitimate subscriber on that same segment, and -- for
+ * whichever microgrids the attack config actually targets -- has its
+ * mitmFlag/attack attributes set directly on the already-installed
+ * application object (no second Install() call, since GOOSE has no
+ * handle_MIM-style request-side dispatch to install separately; a
+ * single instance can be a normal subscriber and, when configured, a
+ * rogue publisher at the same time -- see goose-application-new.h).
  *
  * Author: Kenneth Watts (ken.watts@gmail.com)
  *
@@ -53,8 +78,8 @@
 
 #include "ns3/eps-bearer-tag.h"
 
-#include "ns3/modbus-application-helper-new.h"
-#include "ns3/modbus-application-new.h"
+#include "ns3/goose-application-helper-new.h"
+#include "ns3/goose-application-new.h"
 
 
 #include "ns3/core-module.h"
@@ -71,7 +96,7 @@
 #include <ns3/antenna-module.h>
 
 // jsoncpp's include path differs between build environments (see
-// modbus-application-new.h's identical guard, and the fatal error this
+// goose-application-new.h's identical guard, and the fatal error this
 // hardcoded <json/json.h> produced when compiling in the Docker
 // container, which only provides <jsoncpp/json/json.h>). Using the same
 // __has_include fallback here instead of hardcoding one path variant.
@@ -151,7 +176,7 @@ void readMicroGridConfig(std::string fpath, Json::Value& configobj)
     // signal to check post-parse is parseOk alone.
     if (!tifs.is_open ())
       {
-        std::cerr << "ModbusApplication: FATAL: could not open config file '"
+        std::cerr << "GooseApplication: FATAL: could not open config file '"
                    << fpath << "'" << std::endl;
         exit (1);
       }
@@ -163,7 +188,7 @@ void readMicroGridConfig(std::string fpath, Json::Value& configobj)
     // of failure. Fail loudly here instead.
     if (!parseOk)
       {
-        std::cerr << "ModbusApplication: FATAL: failed to parse config file '"
+        std::cerr << "GooseApplication: FATAL: failed to parse config file '"
                    << fpath << "': " << configreader.getFormattedErrorMessages () << std::endl;
         exit (1);
       }
@@ -189,7 +214,7 @@ int dirExists(const char *path)
  */
 
 void updatePower(){
-    //Use this function to pass in the nodes/nodecontainer/any pointers to sections of the network that would allow you to update the network after your RL agent predicts the new states. 
+    //Use this function to pass in the nodes/nodecontainer/any pointers to sections of the network that would allow you to update the network after your RL agent predicts the new states.
     NS_LOG_UNCOND("Update/Monitor feature values over time");
     Simulator::Schedule (Seconds (2), &updatePower); //Call the function every 2 seconds
 }
@@ -224,7 +249,7 @@ void Throughput (){
                                 // protocol on a flow is unexpected enough to warrant
                                 // stopping rather than silently mislabeling it. Added
                                 // a message so this doesn't die silently if it ever fires.
-                                std::cerr << "ModbusApplication: FATAL: unexpected transport protocol "
+                                std::cerr << "GooseApplication: FATAL: unexpected transport protocol "
                                            << (int)t.protocol << " on flow " << flow->first << std::endl;
                                 exit(1);
                 }
@@ -588,7 +613,7 @@ main (int argc, char *argv[])
   {
     //LogComponentEnable ("IntagrationExample", LOG_LEVEL_INFO);
     // LogComponentEnable ("HelicsSimulatorImpl", LOG_LEVEL_LOGIC);
-    //LogComponentEnable ("ModbusApplicationNew", LOG_LEVEL_INFO);
+    //LogComponentEnable ("GooseApplicationNew", LOG_LEVEL_INFO);
     // LogComponentEnable ("HelicsApplication", LOG_LEVEL_LOGIC);
     //LogComponentEnable ("Names", LOG_LEVEL_LOGIC);
   }
@@ -813,12 +838,33 @@ main (int argc, char *argv[])
 	mobility.Install (Microgrid);
   }
   Ptr<Ipv4StaticRouting> ControlRouting = ipv4RoutingHelper.GetStaticRouting(hubNode.Get(0)->GetObject<Ipv4>()); //star.GetHub()->GetObject<Ipv4>());
+  // GOOSE-specific: this per-microgrid link is CSMA, not the
+  // PointToPointHelper (p2p) every other protocol's copy of this file
+  // uses here -- see file header note on why a shared/multicast-capable
+  // segment is required. Kept for use below when installing the
+  // publisher/subscriber applications and setting up the multicast
+  // route on the publisher's device.
+  CsmaHelper gooseCsma;
+  gooseCsma.SetChannelAttribute ("DataRate", StringValue ("100Mbps"));
+  gooseCsma.SetChannelAttribute ("Delay", TimeValue (NanoSeconds (500)));
+  // A full substation's dataset serializes to several KB, which would
+  // otherwise require IP fragmentation at the standard 1500-byte MTU --
+  // ns-3's fragment reassembly does not deliver reassembled multicast
+  // datagrams to the UDP socket (confirmed: HandleRead never fires for
+  // a fragmented payload, but fires reliably once the payload fits in
+  // one frame). Real GOOSE deployments size datasets to avoid
+  // fragmentation in the first place; raising the MTU here is the
+  // simulation-side equivalent so one substation's full point set can
+  // still be published as a single GOOSE message.
+  gooseCsma.SetDeviceAttribute ("Mtu", UintegerValue (9000));
+  std::vector<NetDeviceContainer> gooseSegments (configObject["microgrid"].size ());
   for (i = 0; i < configObject["microgrid"].size(); i++){
 	  auto ep_name = configObject["microgrid"][i]["name"].asString();
 	  std::cout << "Microgrid network node: " << ep_name << " " << configObject["microgrid"].size() << std::endl;
 	  Ptr<Node> tempNode = Microgrid.Get(i);
 	  //Names::Add(ep_name, tempNode);
-	  NetDeviceContainer NetDev = p2p.Install(NodeContainer(tempNode,MIMNode.Get(i))); //star.GetSpokeNode(i)));
+	  NetDeviceContainer NetDev = gooseCsma.Install(NodeContainer(tempNode,MIMNode.Get(i))); //star.GetSpokeNode(i)));
+	  gooseSegments[i] = NetDev;
 	  Ipv4AddressHelper ipv4Sub;
 	  std::string address = "11."+std::to_string(i+2)+".0.0";
 	  ipv4Sub.SetBase(address.c_str(), "255.255.255.0", "0.0.0.1");
@@ -892,30 +938,27 @@ main (int argc, char *argv[])
   }
   val.push_back(VI);
 
-  uint16_t port = 20000;
+  uint16_t goosePort = 40000;
+  // Kept only because the shared DDoS setup code further below still
+  // references master_port (as UDP_SINK_PORT) -- not otherwise used by
+  // GOOSE's own install sites, which use goosePort throughout instead.
   uint16_t master_port = 40000;
-  ApplicationContainer dnpOutstationApp, dnpMasterApp;
-  //Ptr<Node> hubNode = star.GetHub ();
-  std::vector<uint16_t> mimPort;
+  ApplicationContainer goosePublisherApp, gooseSubscriberApp;
+  // Indexed by microgrid i, so the later attack-config-gated loop can
+  // set mitmFlag/attack attributes directly on the already-installed
+  // subscriber object instead of a second Install() call (see file
+  // header note on why GOOSE doesn't need a separate MIM install site).
+  std::vector<Ptr<GooseApplicationNew> > gooseSubscriberByMicrogrid (configObject["microgrid"].size ());
+  Ipv4StaticRoutingHelper gooseMulticastRouting;
   //changing the parameters of the nodes in the network
-  Simulator::Schedule (Seconds (3.2), &updatePower); 
+  Simulator::Schedule (Seconds (3.2), &updatePower);
 
   for (i = 0;i < configObject["microgrid"].size();i++)
   {
-    mimPort.push_back(master_port);
     auto ep_name = configObject["microgrid"][i]["name"].asString();
     std::cout << "Microgrid network node: " << ep_name << " " << Microgrid.GetN() << " " << configObject["microgrid"][i].size() << " " << i << std::endl;
     Ptr<Node> tempnode1 = Microgrid.Get(i); //star.GetSpokeNode (i);
-    //std::cout << "hub:" << star.GetHubIpv4Address(i) << ", spike:" << star.GetSpokeIpv4Address(i) << std::endl;
 
-    auto cc_name = configObject["controlCenter"]["name"].asString();
-    std::cout << "Control Center network node: " << cc_name << std::endl;
-    
-    int ID = 1; //i+1;
-    if (ring){
-          ID = 1;
-    }
-    //auto ep_name = configObject["microgrid"][i]["name"].asString();
     std::string IDx = "SS_";
     // BUG FIX: this used to unconditionally rebuild ep_name as "SS_"+(i+1),
     // which is only correct if the config's microgrid names are 1-indexed
@@ -925,62 +968,65 @@ main (int argc, char *argv[])
     // substation to the WRONG points file (SS_0 -> looks for
     // points_SS_1.csv, ..., SS_9 -> looks for points_SS_10.csv, which
     // doesn't exist -- initConfig's exit(-1) on a missing file would
-    // crash the last substation's load). Found while sourcing real
-    // points files for MMS's 123-bus validation; same shared loop is
-    // used here unchanged. Using `i` directly matches what's actually
-    // on disk for the current config.
+    // crash the last substation's load for any protocol using this
+    // shared loop, not just MMS/GOOSE). Using `i` directly matches
+    // what's actually on disk for the current config.
     if (std::string(ep_name).find(IDx) != std::string::npos){
         ep_name = "SS_"+std::to_string(i);
     }
     std::cout << ep_name << std::endl;
     interface[i] = i+1;
-    ModbusApplicationHelperNew modbusMaster ("ns3::TcpSocketFactory", InetSocketAddress (hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal(), master_port));  //star.GetHubIpv4Address(i), master_port));
 
-    modbusMaster.SetAttribute("LocalPort", UintegerValue(master_port));
-    modbusMaster.SetAttribute("RemoteAddress", AddressValue(tempnode1->GetObject<Ipv4>()->GetAddress(1,0).GetLocal()));//star.GetSpokeIpv4Address (i)));
-    modbusMaster.SetAttribute("RemotePort", UintegerValue(port));
-    modbusMaster.SetAttribute("JitterMinNs", DoubleValue (std::stoi(topologyConfigObject["Channel"][0]["jitterMin"].asString())));
-    modbusMaster.SetAttribute("JitterMaxNs", DoubleValue (std::stoi(topologyConfigObject["Channel"][0]["jitterMax"].asString())));
-    modbusMaster.SetAttribute("isMaster", BooleanValue (true));
-    modbusMaster.SetAttribute("Name", StringValue (cc_name+ep_name)); //"_SS_"+std::to_string(i+1)));
-    modbusMaster.SetAttribute("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name+".csv")); //pointFileDir+"/points_SS_"+std::to_string(i+1)+".csv"));
-    // DNP3's MasterDeviceAddress/StationDeviceAddress/IntegrityPollInterval
-    // attributes have no equivalent here -- Modbus addresses a device
-    // with a single UnitId, and has no separate "integrity poll" concept
-    // (see modbus-typeid-ctor.cc's GetTypeId for the original design
-    // decision).
-    modbusMaster.SetAttribute("UnitId", UintegerValue(i+2));
-    // Modbus TCP is TCP by definition, unlike DNP3 which runs over UDP
-    // in this production topology.
-    modbusMaster.SetAttribute("EnableTCP", BooleanValue (true));
+    // GOOSE's multicast group is per-microgrid (224.10.<i>.1) so
+    // different substations' GOOSE traffic doesn't collide -- real
+    // GOOSE never leaves the local substation LAN in the first place.
+    std::string gooseGroupStr = "224.10." + std::to_string (i) + ".1";
+    Ipv4Address gooseGroup (gooseGroupStr.c_str ());
 
-    Ptr<ModbusApplicationNew> master = modbusMaster.Install (hubNode.Get(0), std::string(cc_name+ep_name)); //"_SS_"+std::to_string(i+1)));
-    dnpMasterApp.Add(master);
+    // -- Publisher: the substation device (Microgrid.Get(i)) --
+    GooseApplicationHelperNew goosePublisher ("ns3::UdpSocketFactory",
+      InetSocketAddress (tempnode1->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), goosePort));
+    goosePublisher.SetAttribute("LocalPort", UintegerValue(goosePort));
+    goosePublisher.SetAttribute("RemoteAddress", AddressValue(gooseGroup));
+    goosePublisher.SetAttribute("RemotePort", UintegerValue(goosePort));
+    goosePublisher.SetAttribute("isMaster", BooleanValue(true));
+    goosePublisher.SetAttribute("Name", StringValue(ep_name));
+    goosePublisher.SetAttribute("PointsFilename", StringValue(pointFileDir+"/points_"+ep_name+".csv"));
+    goosePublisher.SetAttribute("GooseID", StringValue("GCB_"+ep_name));
+    goosePublisher.SetAttribute("JitterMinNs", DoubleValue (std::stoi(topologyConfigObject["Channel"][0]["jitterMin"].asString())));
+    goosePublisher.SetAttribute("JitterMaxNs", DoubleValue (std::stoi(topologyConfigObject["Channel"][0]["jitterMax"].asString())));
 
-    ModbusApplicationHelperNew modbusOutstation ("ns3::TcpSocketFactory", InetSocketAddress (tempnode1->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address (i), port));
-    modbusOutstation.SetAttribute("LocalPort", UintegerValue(port));
-    modbusOutstation.SetAttribute("RemoteAddress", AddressValue(hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal())); //star.GetHubIpv4Address(i)));
-    modbusOutstation.SetAttribute("RemotePort", UintegerValue(master_port));
-    modbusOutstation.SetAttribute("isMaster", BooleanValue (false));
-    modbusOutstation.SetAttribute("Name", StringValue (ep_name)); //"SS_"+std::to_string(i+1)));
-    modbusOutstation.SetAttribute("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name+".csv")); //pointFileDir+"/points_SS_"+std::to_string(i+1)+".csv"));
-    modbusOutstation.SetAttribute("UnitId", UintegerValue(i+2));
-    modbusOutstation.SetAttribute("EnableTCP", BooleanValue (true));
+    Ptr<GooseApplicationNew> publisher = goosePublisher.Install (tempnode1, std::string(ep_name));
+    goosePublisherApp.Add(publisher);
+    // Starts the publisher's own burst/heartbeat schedule -- see
+    // attack_data's role dispatch (mitmFlag is false here, so this
+    // takes the schedulePublish() branch); the interval argument is
+    // unused in that branch.
+    Simulator::Schedule(MilliSeconds(1005), &GooseApplicationNew::attack_data, publisher, 0);
 
-    Ptr<ModbusApplicationNew> slave = modbusOutstation.Install (tempnode1, std::string(ep_name)); //"SS_"+std::to_string(i+1)));
-    dnpOutstationApp.Add(slave);
-    Simulator::Schedule(MilliSeconds(1005), &ModbusApplicationNew::periodic_poll, master, std::stoi(configObject["Simulation"][0]["PollReqFreq"].asString()));
-    // DNP3's send_control_binary/send_control_analog (a "direct operate"
-    // control API from the vendored DNP3 library) has no equivalent --
-    // Modbus's control mechanism is simply writing to a register/coil.
-    // WriteSingleRegister(address, value) is the direct equivalent of
-    // send_control_analog(DIRECT, address, value); the original -16
-    // value is preserved via the same two's-complement bit pattern a
-    // uint16_t register would hold for a DNP3 analog control of -16.
-    Simulator::Schedule(MilliSeconds(3005), &ModbusApplicationNew::WriteSingleRegister, master,
-      0, static_cast<uint16_t>(-16));
-    master_port += 1;
+    // A default multicast route on the publisher's own device is what
+    // lets its outbound multicast packets actually get routed onto the
+    // shared segment at all (see goose-application-new.cc's
+    // makeMulticastConnection note, and src/csma/examples/csma-multicast.cc
+    // for the real ns-3 pattern this follows).
+    gooseMulticastRouting.SetDefaultMulticastRoute (tempnode1, gooseSegments[i].Get (0));
 
+    // -- Subscriber: the insider/MIM node (MIMNode.Get(i)), always --
+    // -- installed so real subscriber traffic exists regardless of --
+    // -- whether this microgrid is also an attack target (see below). --
+    GooseApplicationHelperNew gooseSubscriber ("ns3::UdpSocketFactory",
+      InetSocketAddress (MIMNode.Get(i)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), goosePort));
+    gooseSubscriber.SetAttribute("LocalPort", UintegerValue(goosePort));
+    gooseSubscriber.SetAttribute("RemoteAddress", AddressValue(gooseGroup));
+    gooseSubscriber.SetAttribute("RemotePort", UintegerValue(goosePort));
+    gooseSubscriber.SetAttribute("isMaster", BooleanValue(false));
+    gooseSubscriber.SetAttribute("Name", StringValue(ep_name+"_sub"));
+    gooseSubscriber.SetAttribute("PointsFilename", StringValue(pointFileDir+"/points_"+ep_name+".csv"));
+    gooseSubscriber.SetAttribute("GooseID", StringValue("GCB_"+ep_name));
+
+    Ptr<GooseApplicationNew> subscriber = gooseSubscriber.Install (MIMNode.Get(i), std::string(ep_name+"_sub"));
+    gooseSubscriberApp.Add(subscriber);
+    gooseSubscriberByMicrogrid[i] = subscriber;
   }
 
   int control = std::stoi(configObject["Controller"][0]["use"].asString());
@@ -1006,112 +1052,64 @@ main (int argc, char *argv[])
     std::cout << "Endpoint name: " << epName << std::endl;
  }
 
-  //Adding the MIM node
-  //Adding the Dnp3 application to man in the middle attack
-  //int MIM_ID = 0;
+  //Adding the rogue GOOSE publisher (attack-config-gated attributes on
+  //the already-installed subscriber -- see file header note on why
+  //GOOSE has no separate MIM install site the way DNP3/Modbus/MMS do)
   if (includeMIM == 1){
     for (int x = 0; x < val.size(); x++){ //std::stoi(configObject["MIM"][0]["NumberAttackers"].asString()); x++){
-      /*int MIM_ID = std::stoi(val[x]) + 1; //x+1;
-      auto ep_name = configObject["MIM"][MIM_ID]["name"].asString();
-      Ptr<Node> tempnode = MIMNode.Get(MIM_ID-1); //star.GetSpokeNode (MIM_ID-1);
-      Names::Add(ep_name, tempnode);
-      std::string enamestring = ep_name;
-      Ptr<Ipv4> ip = Names::Find<Node>(enamestring)->GetObject<Ipv4>();
-      int ID = MIM_ID;
-      if (ring){
-          ID = 1;
-      }
-   
-      auto ep_name2 = configObject["microgrid"][MIM_ID-1]["name"].asString();
-      std::string IDx = "SS_";
-      if (std::string(ep_name2).find(IDx) != std::string::npos){
-	      ep_name2 = "SS_"+std::to_string(i+1);
-      }*/
-	    int MIM_ID = std::stoi(val[x]) + 1; //x+1;
-                  auto ep_name = configObject["MIM"][MIM_ID]["name"].asString();
-                  std::string ID2 = "SS_";
-                  auto ep_name2 = configObject["microgrid"][MIM_ID-1]["name"].asString();
-                  // BUG FIX: same off-by-one as the microgrid loop above --
-                  // configObject["microgrid"][MIM_ID-1] already fetches the
-                  // 0-indexed name (e.g. "SS_0" for MIM_ID=1), but this
-                  // rebuilt it as "SS_"+MIM_ID (1-indexed), pointing at the
-                  // wrong points file. Use MIM_ID-1 to match the index
-                  // actually read above.
-                  if (std::string(ep_name2).find(ID2) != std::string::npos){
-                      ep_name2 = "SS_"+std::to_string(MIM_ID-1);
-                  }
-		  //std::cout << "adding node " << ep_name2 << std::endl;
-                  Ptr<Node> tempnode = MIMNode.Get(MIM_ID-1); //star.GetSpokeNode (MIM_ID-1);
-                  Names::Add(ep_name, tempnode);
-                  std::string enamestring = ep_name;
-                  Ptr<Ipv4> ip = Names::Find<Node>(enamestring)->GetObject<Ipv4>();
-                  int ID = MIM_ID-1;
+      int MIM_ID = std::stoi(val[x]) + 1; //x+1;
 
-      // Ipv4L3ProtocolMIM/victimAddr is a protocol-agnostic IP-layer
-      // mechanism (operates purely on IP addresses inside the L3
-      // Send/Forward path, with no awareness of what protocol is
-      // running above it) -- reused here completely unchanged from
-      // DNP3's wiring, per project discussion.
-      ip->GetObject<Ipv4L3ProtocolMIM> ()->victimAddr = hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal(); //star.GetHubIpv4Address(MIM_ID-1);
+      // GOOSE has no in-path interception (see file header note) --
+      // no Ipv4L3ProtocolMIM/victimAddr redirection is applicable here,
+      // unlike DNP3/Modbus/MMS's unicast client-server model, since a
+      // rogue publisher works by adding a competing multicast sender,
+      // not by redirecting existing traffic.
+      Ptr<GooseApplicationNew> rogue = gooseSubscriberByMicrogrid[MIM_ID-1];
+      if (!rogue) { continue; } // shouldn't happen -- every microgrid gets a subscriber above
 
-
-      //scenario 1, 2 and 3
-      ModbusApplicationHelperNew modbusMIM1 ("ns3::TcpSocketFactory", InetSocketAddress (MIMNode.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address(MIM_ID-1),port)); 
-      modbusMIM1.SetAttribute("LocalPort", UintegerValue(port));
-      modbusMIM1.SetAttribute("RemoteAddress", AddressValue(hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID, 0).GetLocal())); //star.GetHubIpv4Address(MIM_ID-1)));
-      if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 3 || std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 4){
-          modbusMIM1.SetAttribute("RemoteAddress2", AddressValue(Microgrid.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal()));
-      }
-      modbusMIM1.SetAttribute("RemotePort", UintegerValue(mimPort[MIM_ID-1]));
-
-      modbusMIM1.SetAttribute ("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name2+".csv"));
-      modbusMIM1.SetAttribute("JitterMinNs", DoubleValue (500));
-      modbusMIM1.SetAttribute("JitterMaxNs", DoubleValue (1000));
-      modbusMIM1.SetAttribute("isMaster", BooleanValue (false));
-      modbusMIM1.SetAttribute ("Name", StringValue (enamestring));
-      modbusMIM1.SetAttribute("UnitId", UintegerValue(2));
-      modbusMIM1.SetAttribute("EnableTCP", BooleanValue (true));
-      modbusMIM1.SetAttribute("AttackSelection", UintegerValue(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"])));
-
-      modbusMIM1.SetAttribute("RealVal", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
+      rogue->SetAttribute("mitmFlag", BooleanValue(true));
+      // Gives handle_rogue_publish's internal JSON parsing access to
+      // the same MIM attack_type/attack_chance/PointStart/PointStop
+      // entries already parsed into `attack` above -- reusing
+      // --microGridConfig's own path, since that's where NATIG's
+      // attack config actually lives (configObject["MIM"], read at
+      // the top of this function).
+      rogue->SetAttribute("AttackConf", StringValue(configFileName));
+      rogue->SetAttribute("ID", UintegerValue(MIM_ID));
+      rogue->SetAttribute("AttackSelection", UintegerValue(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"])));
+      rogue->SetAttribute("RealVal", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
 
       if (std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 2 || std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 4){
          if(attack["MIM-"+std::to_string(MIM_ID)+"-scenario_id"] == "b"){
-            modbusMIM1.SetAttribute("Value_attck_max", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
-            modbusMIM1.SetAttribute("Value_attck_min", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
-            modbusMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
-            modbusMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
+            rogue->SetAttribute("Value_attck_max", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
+            rogue->SetAttribute("Value_attck_min", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
+            rogue->SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"]));
+            rogue->SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"]));
          }
          if(attack["MIM-"+std::to_string(MIM_ID)+"-scenario_id"] == "a"){
-            modbusMIM1.SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
-            modbusMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
-            modbusMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
+            rogue->SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
+            rogue->SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"]));
+            rogue->SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"]));
           }
       }
 
       if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 3){
-         modbusMIM1.SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
-         modbusMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
-         modbusMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
+         rogue->SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
+         rogue->SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"]));
+         rogue->SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"]));
       }
 
-      modbusMIM1.SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"])); 
-      modbusMIM1.SetAttribute("AttackEndTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-End"])); 
-      modbusMIM1.SetAttribute("mitmFlag", BooleanValue(true));
-      Ptr<ModbusApplicationNew> mim = modbusMIM1.Install (tempnode, enamestring);
-      ApplicationContainer dnpMIMApp(mim);
-      dnpMIMApp.Start (Seconds (start));
-      dnpMIMApp.Stop (simTime);
-
+      rogue->SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"]));
+      rogue->SetAttribute("AttackEndTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-End"]));
     }
   }
 
 
 
-  dnpMasterApp.Start (Seconds (start));
-  dnpMasterApp.Stop (simTime);
-  dnpOutstationApp.Start (Seconds (start));
-  dnpOutstationApp.Stop (simTime);
+  goosePublisherApp.Start (Seconds (start));
+  goosePublisherApp.Stop (simTime);
+  gooseSubscriberApp.Start (Seconds (start));
+  gooseSubscriberApp.Stop (simTime);
 
 
   std::cout << "Setting up Bots" << std::endl;
@@ -1260,6 +1258,7 @@ main (int argc, char *argv[])
     Simulator::Schedule (Seconds (0.2), &Throughput);
 
     if (mon) {
+        gooseCsma.EnablePcapAll (pcapFileDir+"goose-csma", false);
         if (DDoS){
             p2p.EnablePcapAll (pcapFileDir+"p2p-DDoS", false);
             csma2.EnablePcapAll (pcapFileDir+"csma-DDoS", false);

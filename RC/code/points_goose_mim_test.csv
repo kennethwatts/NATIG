@@ -1,0 +1,4 @@
+ANALOG,Node1$MMXU1.TotW.mag.f,100
+ANALOG,Node1$MMXU1.TotVAr.mag.f,50
+BINARY,Node1$XCBR1.Pos.stVal,0
+BINARY,Node1$XCBR1.BlkOpn.stVal,1

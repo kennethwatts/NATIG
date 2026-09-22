@@ -15,12 +15,18 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- * Adapted for Modbus TCP support, derived from the original DNP3/UDP
- * file (ns3-helics-grid-dnp3.cc) by:
+ * Adapted for MMS (IEC 61850 client-server) support, derived from
+ * ns3-modbus-helics-grid.cc (per-protocol convention: build each new
+ * protocol's topology file from the most recently added protocol's,
+ * not the original DNP3/UDP file, since portability/correctness fixes
+ * accumulate -- see that file's own header for its DNP3 lineage) by:
  *   Author: Joon-Seok Kim <joonseok.kim@pnnl.gov>
  *   Author: Oceane Bel
  * -- see file comments throughout for the specific protocol-specific
- * conversions made for this adaptation.
+ * conversions made for this adaptation. As with the Modbus file, ~1000
+ * of this file's lines are protocol-agnostic topology/HELICS/attack-
+ * config/flow-monitoring code reused unchanged; only the master/
+ * outstation/MIM install call sites below are MMS-specific.
  *
  * Author: Kenneth Watts (ken.watts@gmail.com)
  *
@@ -53,8 +59,8 @@
 
 #include "ns3/eps-bearer-tag.h"
 
-#include "ns3/modbus-application-helper-new.h"
-#include "ns3/modbus-application-new.h"
+#include "ns3/mms-application-helper-new.h"
+#include "ns3/mms-application-new.h"
 
 
 #include "ns3/core-module.h"
@@ -71,7 +77,7 @@
 #include <ns3/antenna-module.h>
 
 // jsoncpp's include path differs between build environments (see
-// modbus-application-new.h's identical guard, and the fatal error this
+// mms-application-new.h's identical guard, and the fatal error this
 // hardcoded <json/json.h> produced when compiling in the Docker
 // container, which only provides <jsoncpp/json/json.h>). Using the same
 // __has_include fallback here instead of hardcoding one path variant.
@@ -151,7 +157,7 @@ void readMicroGridConfig(std::string fpath, Json::Value& configobj)
     // signal to check post-parse is parseOk alone.
     if (!tifs.is_open ())
       {
-        std::cerr << "ModbusApplication: FATAL: could not open config file '"
+        std::cerr << "MmsApplication: FATAL: could not open config file '"
                    << fpath << "'" << std::endl;
         exit (1);
       }
@@ -163,7 +169,7 @@ void readMicroGridConfig(std::string fpath, Json::Value& configobj)
     // of failure. Fail loudly here instead.
     if (!parseOk)
       {
-        std::cerr << "ModbusApplication: FATAL: failed to parse config file '"
+        std::cerr << "MmsApplication: FATAL: failed to parse config file '"
                    << fpath << "': " << configreader.getFormattedErrorMessages () << std::endl;
         exit (1);
       }
@@ -224,7 +230,7 @@ void Throughput (){
                                 // protocol on a flow is unexpected enough to warrant
                                 // stopping rather than silently mislabeling it. Added
                                 // a message so this doesn't die silently if it ever fires.
-                                std::cerr << "ModbusApplication: FATAL: unexpected transport protocol "
+                                std::cerr << "MmsApplication: FATAL: unexpected transport protocol "
                                            << (int)t.protocol << " on flow " << flow->first << std::endl;
                                 exit(1);
                 }
@@ -588,7 +594,7 @@ main (int argc, char *argv[])
   {
     //LogComponentEnable ("IntagrationExample", LOG_LEVEL_INFO);
     // LogComponentEnable ("HelicsSimulatorImpl", LOG_LEVEL_LOGIC);
-    //LogComponentEnable ("ModbusApplicationNew", LOG_LEVEL_INFO);
+    //LogComponentEnable ("MmsApplicationNew", LOG_LEVEL_INFO);
     // LogComponentEnable ("HelicsApplication", LOG_LEVEL_LOGIC);
     //LogComponentEnable ("Names", LOG_LEVEL_LOGIC);
   }
@@ -894,7 +900,7 @@ main (int argc, char *argv[])
 
   uint16_t port = 20000;
   uint16_t master_port = 40000;
-  ApplicationContainer dnpOutstationApp, dnpMasterApp;
+  ApplicationContainer mmsServerApp, mmsClientApp;
   //Ptr<Node> hubNode = star.GetHub ();
   std::vector<uint16_t> mimPort;
   //changing the parameters of the nodes in the network
@@ -925,60 +931,69 @@ main (int argc, char *argv[])
     // substation to the WRONG points file (SS_0 -> looks for
     // points_SS_1.csv, ..., SS_9 -> looks for points_SS_10.csv, which
     // doesn't exist -- initConfig's exit(-1) on a missing file would
-    // crash the last substation's load). Found while sourcing real
-    // points files for MMS's 123-bus validation; same shared loop is
-    // used here unchanged. Using `i` directly matches what's actually
-    // on disk for the current config.
+    // crash the last substation's load for any protocol using this
+    // shared loop, not just MMS). Found while sourcing real points files
+    // for MMS's 123-bus validation. Using `i` directly matches what's
+    // actually on disk for the current config.
     if (std::string(ep_name).find(IDx) != std::string::npos){
         ep_name = "SS_"+std::to_string(i);
     }
     std::cout << ep_name << std::endl;
     interface[i] = i+1;
-    ModbusApplicationHelperNew modbusMaster ("ns3::TcpSocketFactory", InetSocketAddress (hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal(), master_port));  //star.GetHubIpv4Address(i), master_port));
+    MmsApplicationHelperNew mmsClient ("ns3::TcpSocketFactory", InetSocketAddress (hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal(), master_port));  //star.GetHubIpv4Address(i), master_port));
 
-    modbusMaster.SetAttribute("LocalPort", UintegerValue(master_port));
-    modbusMaster.SetAttribute("RemoteAddress", AddressValue(tempnode1->GetObject<Ipv4>()->GetAddress(1,0).GetLocal()));//star.GetSpokeIpv4Address (i)));
-    modbusMaster.SetAttribute("RemotePort", UintegerValue(port));
-    modbusMaster.SetAttribute("JitterMinNs", DoubleValue (std::stoi(topologyConfigObject["Channel"][0]["jitterMin"].asString())));
-    modbusMaster.SetAttribute("JitterMaxNs", DoubleValue (std::stoi(topologyConfigObject["Channel"][0]["jitterMax"].asString())));
-    modbusMaster.SetAttribute("isMaster", BooleanValue (true));
-    modbusMaster.SetAttribute("Name", StringValue (cc_name+ep_name)); //"_SS_"+std::to_string(i+1)));
-    modbusMaster.SetAttribute("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name+".csv")); //pointFileDir+"/points_SS_"+std::to_string(i+1)+".csv"));
-    // DNP3's MasterDeviceAddress/StationDeviceAddress/IntegrityPollInterval
-    // attributes have no equivalent here -- Modbus addresses a device
-    // with a single UnitId, and has no separate "integrity poll" concept
-    // (see modbus-typeid-ctor.cc's GetTypeId for the original design
-    // decision).
-    modbusMaster.SetAttribute("UnitId", UintegerValue(i+2));
-    // Modbus TCP is TCP by definition, unlike DNP3 which runs over UDP
-    // in this production topology.
-    modbusMaster.SetAttribute("EnableTCP", BooleanValue (true));
+    mmsClient.SetAttribute("LocalPort", UintegerValue(master_port));
+    mmsClient.SetAttribute("RemoteAddress", AddressValue(tempnode1->GetObject<Ipv4>()->GetAddress(1,0).GetLocal()));//star.GetSpokeIpv4Address (i)));
+    mmsClient.SetAttribute("RemotePort", UintegerValue(port));
+    mmsClient.SetAttribute("JitterMinNs", DoubleValue (std::stoi(topologyConfigObject["Channel"][0]["jitterMin"].asString())));
+    mmsClient.SetAttribute("JitterMaxNs", DoubleValue (std::stoi(topologyConfigObject["Channel"][0]["jitterMax"].asString())));
+    mmsClient.SetAttribute("isMaster", BooleanValue (true));
+    mmsClient.SetAttribute("Name", StringValue (cc_name+ep_name)); //"_SS_"+std::to_string(i+1)));
+    mmsClient.SetAttribute("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name+".csv")); //pointFileDir+"/points_SS_"+std::to_string(i+1)+".csv"));
+    // DNP3/Modbus's MasterDeviceAddress/StationDeviceAddress/UnitId
+    // attributes have no equivalent here -- MMS addresses data by
+    // object reference name, not a numeric device/unit address (see
+    // mms-application-new.h's design note); nothing to set in their
+    // place.
+    // MMS is TCP-only in this implementation (see mms-application-new.h),
+    // same as Modbus TCP, unlike DNP3 which runs over UDP in this
+    // production topology.
+    mmsClient.SetAttribute("EnableTCP", BooleanValue (true));
 
-    Ptr<ModbusApplicationNew> master = modbusMaster.Install (hubNode.Get(0), std::string(cc_name+ep_name)); //"_SS_"+std::to_string(i+1)));
-    dnpMasterApp.Add(master);
+    Ptr<MmsApplicationNew> client = mmsClient.Install (hubNode.Get(0), std::string(cc_name+ep_name)); //"_SS_"+std::to_string(i+1)));
+    mmsClientApp.Add(client);
 
-    ModbusApplicationHelperNew modbusOutstation ("ns3::TcpSocketFactory", InetSocketAddress (tempnode1->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address (i), port));
-    modbusOutstation.SetAttribute("LocalPort", UintegerValue(port));
-    modbusOutstation.SetAttribute("RemoteAddress", AddressValue(hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal())); //star.GetHubIpv4Address(i)));
-    modbusOutstation.SetAttribute("RemotePort", UintegerValue(master_port));
-    modbusOutstation.SetAttribute("isMaster", BooleanValue (false));
-    modbusOutstation.SetAttribute("Name", StringValue (ep_name)); //"SS_"+std::to_string(i+1)));
-    modbusOutstation.SetAttribute("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name+".csv")); //pointFileDir+"/points_SS_"+std::to_string(i+1)+".csv"));
-    modbusOutstation.SetAttribute("UnitId", UintegerValue(i+2));
-    modbusOutstation.SetAttribute("EnableTCP", BooleanValue (true));
+    MmsApplicationHelperNew mmsServer ("ns3::TcpSocketFactory", InetSocketAddress (tempnode1->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address (i), port));
+    mmsServer.SetAttribute("LocalPort", UintegerValue(port));
+    mmsServer.SetAttribute("RemoteAddress", AddressValue(hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal())); //star.GetHubIpv4Address(i)));
+    mmsServer.SetAttribute("RemotePort", UintegerValue(master_port));
+    mmsServer.SetAttribute("isMaster", BooleanValue (false));
+    mmsServer.SetAttribute("Name", StringValue (ep_name)); //"SS_"+std::to_string(i+1)));
+    mmsServer.SetAttribute("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name+".csv")); //pointFileDir+"/points_SS_"+std::to_string(i+1)+".csv"));
+    mmsServer.SetAttribute("EnableTCP", BooleanValue (true));
 
-    Ptr<ModbusApplicationNew> slave = modbusOutstation.Install (tempnode1, std::string(ep_name)); //"SS_"+std::to_string(i+1)));
-    dnpOutstationApp.Add(slave);
-    Simulator::Schedule(MilliSeconds(1005), &ModbusApplicationNew::periodic_poll, master, std::stoi(configObject["Simulation"][0]["PollReqFreq"].asString()));
-    // DNP3's send_control_binary/send_control_analog (a "direct operate"
-    // control API from the vendored DNP3 library) has no equivalent --
-    // Modbus's control mechanism is simply writing to a register/coil.
-    // WriteSingleRegister(address, value) is the direct equivalent of
-    // send_control_analog(DIRECT, address, value); the original -16
-    // value is preserved via the same two's-complement bit pattern a
-    // uint16_t register would hold for a DNP3 analog control of -16.
-    Simulator::Schedule(MilliSeconds(3005), &ModbusApplicationNew::WriteSingleRegister, master,
-      0, static_cast<uint16_t>(-16));
+    Ptr<MmsApplicationNew> server = mmsServer.Install (tempnode1, std::string(ep_name)); //"SS_"+std::to_string(i+1)));
+    mmsServerApp.Add(server);
+    Simulator::Schedule(MilliSeconds(1005), &MmsApplicationNew::periodic_poll, client, std::stoi(configObject["Simulation"][0]["PollReqFreq"].asString()));
+    // The server's unsolicited Report push (see attack_data() and
+    // MmsServiceCode::REPORT) has no DNP3/Modbus equivalent -- kick it
+    // off the same way periodic_poll is kicked off for the client role,
+    // reusing the same poll-frequency config entry as the interval
+    // since no dedicated Report-interval config key exists yet.
+    Simulator::Schedule(MilliSeconds(1005), &MmsApplicationNew::attack_data, server, std::stoi(configObject["Simulation"][0]["PollReqFreq"].asString()));
+    // DNP3's send_control_binary/send_control_analog and Modbus's
+    // WriteSingleRegister (a "direct operate" control smoke-test fired
+    // shortly after startup) have no drop-in MMS equivalent here: MMS
+    // addresses points by object-reference name (WriteAnalogValue takes
+    // a name, not a numeric address), and no real MMS-styled points
+    // file exists yet for this topology's nodes (see
+    // mms-application-new.cc's "KNOWN OPEN ITEMS" header comment) to
+    // know a real point's name in advance. Deliberately left as a gap
+    // rather than fabricating a placeholder object-reference name that
+    // would silently no-op against a real server -- fill in with the
+    // node's actual first analog point name once real MMS points files
+    // exist for the 123-bus topology (see task: real 123-bus Docker/
+    // Unity validation).
     master_port += 1;
 
   }
@@ -1056,62 +1071,64 @@ main (int argc, char *argv[])
 
 
       //scenario 1, 2 and 3
-      ModbusApplicationHelperNew modbusMIM1 ("ns3::TcpSocketFactory", InetSocketAddress (MIMNode.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address(MIM_ID-1),port)); 
-      modbusMIM1.SetAttribute("LocalPort", UintegerValue(port));
-      modbusMIM1.SetAttribute("RemoteAddress", AddressValue(hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID, 0).GetLocal())); //star.GetHubIpv4Address(MIM_ID-1)));
+      MmsApplicationHelperNew mmsMIM1 ("ns3::TcpSocketFactory", InetSocketAddress (MIMNode.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address(MIM_ID-1),port));
+      mmsMIM1.SetAttribute("LocalPort", UintegerValue(port));
+      mmsMIM1.SetAttribute("RemoteAddress", AddressValue(hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID, 0).GetLocal())); //star.GetHubIpv4Address(MIM_ID-1)));
       if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 3 || std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 4){
-          modbusMIM1.SetAttribute("RemoteAddress2", AddressValue(Microgrid.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal()));
+          mmsMIM1.SetAttribute("RemoteAddress2", AddressValue(Microgrid.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal()));
       }
-      modbusMIM1.SetAttribute("RemotePort", UintegerValue(mimPort[MIM_ID-1]));
+      mmsMIM1.SetAttribute("RemotePort", UintegerValue(mimPort[MIM_ID-1]));
 
-      modbusMIM1.SetAttribute ("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name2+".csv"));
-      modbusMIM1.SetAttribute("JitterMinNs", DoubleValue (500));
-      modbusMIM1.SetAttribute("JitterMaxNs", DoubleValue (1000));
-      modbusMIM1.SetAttribute("isMaster", BooleanValue (false));
-      modbusMIM1.SetAttribute ("Name", StringValue (enamestring));
-      modbusMIM1.SetAttribute("UnitId", UintegerValue(2));
-      modbusMIM1.SetAttribute("EnableTCP", BooleanValue (true));
-      modbusMIM1.SetAttribute("AttackSelection", UintegerValue(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"])));
+      mmsMIM1.SetAttribute ("PointsFilename", StringValue (pointFileDir+"/points_"+ep_name2+".csv"));
+      mmsMIM1.SetAttribute("JitterMinNs", DoubleValue (500));
+      mmsMIM1.SetAttribute("JitterMaxNs", DoubleValue (1000));
+      mmsMIM1.SetAttribute("isMaster", BooleanValue (false));
+      mmsMIM1.SetAttribute ("Name", StringValue (enamestring));
+      // No UnitId equivalent -- MMS addresses data by object reference
+      // name, not a numeric device/unit address (see the client/server
+      // install block above for the same note).
+      mmsMIM1.SetAttribute("EnableTCP", BooleanValue (true));
+      mmsMIM1.SetAttribute("AttackSelection", UintegerValue(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"])));
 
-      modbusMIM1.SetAttribute("RealVal", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
+      mmsMIM1.SetAttribute("RealVal", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
 
       if (std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 2 || std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 4){
          if(attack["MIM-"+std::to_string(MIM_ID)+"-scenario_id"] == "b"){
-            modbusMIM1.SetAttribute("Value_attck_max", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
-            modbusMIM1.SetAttribute("Value_attck_min", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
-            modbusMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
-            modbusMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
+            mmsMIM1.SetAttribute("Value_attck_max", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
+            mmsMIM1.SetAttribute("Value_attck_min", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-real_val"]));
+            mmsMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
+            mmsMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
          }
          if(attack["MIM-"+std::to_string(MIM_ID)+"-scenario_id"] == "a"){
-            modbusMIM1.SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
-            modbusMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
-            modbusMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
+            mmsMIM1.SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
+            mmsMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
+            mmsMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
           }
       }
 
       if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 3){
-         modbusMIM1.SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
-         modbusMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
-         modbusMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
+         mmsMIM1.SetAttribute("Value_attck", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-attack_val"]));
+         mmsMIM1.SetAttribute("NodeID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-node_id"])); 
+         mmsMIM1.SetAttribute("PointID", StringValue (attack["MIM-"+std::to_string(MIM_ID)+"-point_id"])); 
       }
 
-      modbusMIM1.SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"])); 
-      modbusMIM1.SetAttribute("AttackEndTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-End"])); 
-      modbusMIM1.SetAttribute("mitmFlag", BooleanValue(true));
-      Ptr<ModbusApplicationNew> mim = modbusMIM1.Install (tempnode, enamestring);
-      ApplicationContainer dnpMIMApp(mim);
-      dnpMIMApp.Start (Seconds (start));
-      dnpMIMApp.Stop (simTime);
+      mmsMIM1.SetAttribute("AttackStartTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-Start"])); 
+      mmsMIM1.SetAttribute("AttackEndTime", StringValue(attack["MIM-"+std::to_string(MIM_ID)+"-End"])); 
+      mmsMIM1.SetAttribute("mitmFlag", BooleanValue(true));
+      Ptr<MmsApplicationNew> mim = mmsMIM1.Install (tempnode, enamestring);
+      ApplicationContainer mmsMIMApp(mim);
+      mmsMIMApp.Start (Seconds (start));
+      mmsMIMApp.Stop (simTime);
 
     }
   }
 
 
 
-  dnpMasterApp.Start (Seconds (start));
-  dnpMasterApp.Stop (simTime);
-  dnpOutstationApp.Start (Seconds (start));
-  dnpOutstationApp.Stop (simTime);
+  mmsClientApp.Start (Seconds (start));
+  mmsClientApp.Stop (simTime);
+  mmsServerApp.Start (Seconds (start));
+  mmsServerApp.Stop (simTime);
 
 
   std::cout << "Setting up Bots" << std::endl;
