@@ -1023,16 +1023,33 @@ main (int argc, char *argv[])
                   Names::Add(ep_name, tempnode);
                   std::string enamestring = ep_name;
                   Ptr<Ipv4> ip = Names::Find<Node>(enamestring)->GetObject<Ipv4>();
-                  int ID = MIM_ID-1;
+                  // Hub-side Ipv4 interface index for this MIM's spoke. In ns-3 the
+                  // loopback is interface 0 and spoke i's p2p link is interface i+1, so
+                  // spoke (MIM_ID-1) is hub interface MIM_ID. The previous value MIM_ID-1
+                  // resolved to interface 0 = loopback (127.0.0.1) for MIM_ID=1, so
+                  // victimAddr never matched real DNP3 traffic and handle_MIM never fired.
+                  // This matches the master's own hub lookup (int ID = 1 for one microgrid)
+                  // and the commented-out star.GetHubIpv4Address(MIM_ID-1) it replaced.
+                  int hubIf = MIM_ID;
+                  Ipv4Address hubAddr = hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(hubIf, 0).GetLocal();
 
 
-      ip->GetObject<Ipv4L3ProtocolMIM> ()->victimAddr = hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal(); //star.GetHubIpv4Address(MIM_ID-1);
+      ip->GetObject<Ipv4L3ProtocolMIM> ()->victimAddr = hubAddr; //star.GetHubIpv4Address(MIM_ID-1);
 
 
       //scenario 1, 2 and 3
       Dnp3ApplicationHelperNew dnp3MIM1 ("ns3::UdpSocketFactory", InetSocketAddress (MIMNode.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address(MIM_ID-1),port)); 
       dnp3MIM1.SetAttribute("LocalPort", UintegerValue(port));
-      dnp3MIM1.SetAttribute("RemoteAddress", AddressValue(hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID, 0).GetLocal())); //star.GetHubIpv4Address(MIM_ID-1)));
+      dnp3MIM1.SetAttribute("RemoteAddress", AddressValue(hubAddr)); //star.GetHubIpv4Address(MIM_ID-1)));
+      // One-time setup trace (printed once per MIM install, not per packet): prints the
+      // victimAddr actually stored in the Ipv4L3ProtocolMIM object and the RemoteAddress
+      // actually passed to the attacker app, to confirm they are a real hub interface
+      // (not loopback 127.0.0.1) at runtime.
+      std::cout << "MIM setup [" << enamestring << "]: MIM_ID=" << MIM_ID << " hubIf=" << hubIf
+                << " victimAddr=" << ip->GetObject<Ipv4L3ProtocolMIM> ()->victimAddr
+                << " attackerRemoteAddress=" << hubAddr
+                << " (MIM spoke addr=" << MIMNode.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal() << ")"
+                << std::endl;
       if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 3 || std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 4){
           dnp3MIM1.SetAttribute("RemoteAddress2", AddressValue(Microgrid.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal()));
       }
