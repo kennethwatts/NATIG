@@ -496,6 +496,19 @@ safeStod (const std::string& s, double defaultValue, const std::string& context)
     }
 }
 
+// mimStof -- single-arg guard for the on-path MIM/replay attack-config parsers
+// (GetTimer/GetVal/get_val). These parse comma/dash-delimited attack fields
+// (Start/End/attack_val/min/max) with std::stof, which throws uncaught on an
+// empty or non-numeric token and aborts the whole run. This path was never
+// exercised until the victimAddr loopback fix let handle_MIM actually receive
+// packets, so these calls were never hardened like the FDI path. Defaults to
+// 0.0f on a bad value (the run then forwards unmodified rather than aborting).
+static float
+mimStof (const std::string& s)
+{
+    return safeStof (s, 0.0f, "MIM attack-config parse");
+}
+
 // Application Methods
 void Dnp3ApplicationNew::StartApplication ()    // Called at time specified by Start
 {
@@ -609,20 +622,20 @@ void Dnp3ApplicationNew::GetStartStopArray(){
 	std::string token_int;
         while((pos_1 = token.find(delimiter2)) != std::string::npos){
           token_int = token.substr(0,pos_1);
-	  timer.push_back(std::stof(token_int));
+	  timer.push_back(mimStof(token_int));
 	  token.erase(0, pos_1 + delimiter2.length());
 	}
-	timer.push_back(std::stof(token));
+	timer.push_back(mimStof(token));
         attack["MIM-"+std::to_string(MIM_ID)+"-Start"].erase(0, pos + delimiter.length());
   }
   std::cout << "I am printing here " << attack["MIM-"+std::to_string(MIM_ID)+"-Start"] << std::endl;
   std::string token_int;
   while((pos_1 = attack["MIM-"+std::to_string(MIM_ID)+"-Start"].find(delimiter2)) != std::string::npos){
       token_int = attack["MIM-"+std::to_string(MIM_ID)+"-Start"];
-      timer.push_back(std::stof(token_int));
+      timer.push_back(mimStof(token_int));
       attack["MIM-"+std::to_string(MIM_ID)+"-Start"].erase(0, pos_1 + delimiter2.length());
   }
-  timer.push_back(std::stof(attack["MIM-"+std::to_string(MIM_ID)+"-Start"]));
+  timer.push_back(mimStof(attack["MIM-"+std::to_string(MIM_ID)+"-Start"]));
 
   std::vector<float> timer_end;
   pos = 0;
@@ -634,30 +647,30 @@ void Dnp3ApplicationNew::GetStartStopArray(){
 	std::string token_int;
         while((pos_1 = token1.find(delimiter2)) != std::string::npos){
           token_int = token1.substr(0,pos_1);
-	  timer.push_back(std::stof(token_int));
+	  timer.push_back(mimStof(token_int));
 	  token1.erase(0, pos_1 + delimiter2.length());
 	}
-	timer.push_back(std::stof(token1));
+	timer.push_back(mimStof(token1));
         attack["MIM-"+std::to_string(MIM_ID)+"-End"].erase(0, pos + delimiter.length());
   }
   std::cout << "I am printing here " << attack["MIM-"+std::to_string(MIM_ID)+"-End"] << std::endl;
   //std::string token_int;
   while((pos_1 = attack["MIM-"+std::to_string(MIM_ID)+"-End"].find(delimiter2)) != std::string::npos){
       token_int = attack["MIM-"+std::to_string(MIM_ID)+"-End"];
-      timer.push_back(std::stof(token_int));
+      timer.push_back(mimStof(token_int));
       attack["MIM-"+std::to_string(MIM_ID)+"-End"].erase(0, pos_1 + delimiter2.length());
   }
-  timer.push_back(std::stof(attack["MIM-"+std::to_string(MIM_ID)+"-End"]));
+  timer.push_back(mimStof(attack["MIM-"+std::to_string(MIM_ID)+"-End"]));
   /*size_t pos1 = 0;
   std::string token1;
   while ((pos1 = attack["MIM-"+std::to_string(MIM_ID)+"-End"].find(delimiter)) != std::string::npos){
         token1 = attack["MIM-"+std::to_string(MIM_ID)+"-End"].substr(0, pos1);
 	std::cout << "Stof 2" << std::endl;
-	timer_end.push_back(std::stof(token1));
+	timer_end.push_back(mimStof(token1));
 	attack["MIM-"+std::to_string(MIM_ID)+"-End"].erase(0, pos1 + delimiter.length());
   }
   std::cout << "I am printing here 2 " << attack["MIM-"+std::to_string(MIM_ID)+"-End"] << std::endl;
-  timer_end.push_back(std::stof(attack["MIM-"+std::to_string(MIM_ID)+"-End"]));*/
+  timer_end.push_back(mimStof(attack["MIM-"+std::to_string(MIM_ID)+"-End"]));*/
 }
 
 std::vector<float> Dnp3ApplicationNew::GetVal(std::map<std::string, std::string> attack, std::string tag) {
@@ -669,11 +682,11 @@ std::vector<float> Dnp3ApplicationNew::GetVal(std::map<std::string, std::string>
   while ((pos = attack["MIM-"+std::to_string(MIM_ID)+"-"+tag].find(delimiter)) != std::string::npos) {
         token = attack["MIM-"+std::to_string(MIM_ID)+"-"+tag].substr(0, pos);
 	std::cout << "Stof 1" << std::endl;
-	timer.push_back(std::stof(token));
+	timer.push_back(mimStof(token));
         attack["MIM-"+std::to_string(MIM_ID)+"-"+tag].erase(0, pos + delimiter.length());
   }
   std::cout << "I am printing here ----------------------- " << attack["MIM-"+std::to_string(MIM_ID)+"-"+tag] << std::endl;
-  timer.push_back(std::stof(attack["MIM-"+std::to_string(MIM_ID)+"-"+tag]));
+  timer.push_back(mimStof(attack["MIM-"+std::to_string(MIM_ID)+"-"+tag]));
   return timer;
 }
 
@@ -741,11 +754,11 @@ void Dnp3ApplicationNew::makeUdpConnection(void) {
     while ((pos = m_attackStartTime.find(delimiter)) != std::string::npos) {
 	token = m_attackStartTime.substr(0, pos);
 	std::cout << "Stof 1" << std::endl;
-	timer.push_back(std::stof(token));
+	timer.push_back(mimStof(token));
         m_attackStartTime.erase(0, pos + delimiter.length());
     }
     std::cout << "I am printing here " << m_attackStartTime << std::endl;
-    timer.push_back(std::stof(m_attackStartTime));
+    timer.push_back(mimStof(m_attackStartTime));
 
     std::vector<float> timer_end;
     size_t pos1 = 0;
@@ -753,11 +766,11 @@ void Dnp3ApplicationNew::makeUdpConnection(void) {
     while ((pos1 = m_attackEndTime.find(delimiter)) != std::string::npos){
         token1 = m_attackEndTime.substr(0, pos1);
 	std::cout << "Stof 2" << std::endl;
-	timer_end.push_back(std::stof(token1));
+	timer_end.push_back(mimStof(token1));
 	m_attackEndTime.erase(0, pos1 + delimiter.length());
     }
     std::cout << "I am printing here 2 " << m_attackEndTime << std::endl;
-    timer_end.push_back(std::stof(m_attackEndTime));
+    timer_end.push_back(mimStof(m_attackEndTime));
 
     std::cout << "My name is: " << std::endl;
     std::cout << m_name << std::endl;
@@ -1767,16 +1780,16 @@ float Dnp3ApplicationNew::get_val(std::vector<std::string> val, std::vector<std:
 	    float r = (rand() % 10) + 1;//rand() / (RAND_MAX);
 	    std::cout << "The random number that is selected is " << r << std::endl;
 	    if (r > 5){
-		    f = (std::stof(val_min[index])); 
+		    f = (mimStof(val_min[index])); 
 	    }else{
-		    f = (std::stof(val_max[index])); 
+		    f = (mimStof(val_max[index])); 
 	    }
         }else{
 	    std::cout << "The value is: " << val[index] << std::endl;
-	    f = (std::stof(val[index])); 
+	    f = (mimStof(val[index])); 
         }
     }else{
-        f = (std::stof(val[index]));
+        f = (mimStof(val[index]));
     }
     return f;
 
@@ -1865,6 +1878,13 @@ void Dnp3ApplicationNew::handle_MIM(Ptr<Socket> socket) {
             }
         }
         std::cout << "Mapped " << ID_point.size() << " points for attack processing." << std::endl;
+        if (ID_point.empty()) {
+            std::cerr << "MIM CONFIG ERROR: 0 points mapped for " << node_id << "$" << point_id
+                      << " -- the target node/point is not in this MIM's loaded points file "
+                         "(points_<microgrid>.csv for microgrid MIM_ID-1). The attack cannot fire; "
+                         "packets will be forwarded unmodified. Check the MIM's microgrid/listMIM slot vs the target's microgrid."
+                      << std::endl;
+        }
 
         // Handle MITM attack if flag is active
         if (mitm_flag) {
@@ -2172,7 +2192,7 @@ void Dnp3ApplicationNew::resetToRealValue(int pointId, const std::string& realVa
         double currentTime = Simulator::Now().GetSeconds();
         if (std::find_if(realValue.begin(), realValue.end(), [](unsigned char c) { return !std::isdigit(c); }) == realValue.end()) {
             try {
-                float f = std::stof(realValue);
+                float f = mimStof(realValue);
                 Bit32AnalogOutput ao(f * 1000, pointId);
                 m_p->direct_operate(false, ao);
                 std::cout << "Reset analog point " << pointId << " to value " << f << " at time " << currentTime << "s" << std::endl;
