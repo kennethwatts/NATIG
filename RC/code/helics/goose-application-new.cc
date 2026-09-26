@@ -60,10 +60,20 @@
 #include "ns3/inet6-socket-address.h"
 #include "ns3/simulator.h"
 #include <unistd.h>
+#include <cstdlib>
 
 namespace ns3 {
 
 NS_LOG_COMPONENT_DEFINE ("GooseApplicationNew");
+
+// Per-packet perf tracing to perf.txt is OFF by default: it appended one line per
+// frame to a shared file in the build dir that grew to ~100 GB. Set the env var
+// NATIG_PERF_TRACE (any value) to re-enable it for debugging.
+static bool natigPerfTrace ()
+{
+  static const bool on = (std::getenv ("NATIG_PERF_TRACE") != nullptr);
+  return on;
+}
 
 NS_OBJECT_ENSURE_REGISTERED (GooseApplicationNew);
 
@@ -1195,7 +1205,7 @@ GooseApplicationNew::Record (Ptr<Packet> packet, Address from)
     {
       m_rxTraces (packet);
       m_rxTraceWithAddresses (packet, from, localAddress);
-      if (packet->GetSize () > 0)
+      if (packet->GetSize () > 0 && natigPerfTrace ())
         {
           std::ofstream outfile;
           if (!(access ("perf.txt", F_OK) == 0))

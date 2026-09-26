@@ -86,6 +86,15 @@ namespace ns3 {
 
 NS_LOG_COMPONENT_DEFINE ("Dnp3ApplicationNew");
 
+// Per-packet perf tracing to perf.txt is OFF by default: it appended one line per
+// packet to a shared file in the build dir that grew to ~100 GB. Set the env var
+// NATIG_PERF_TRACE (any value) to re-enable it for debugging.
+static bool natigPerfTrace ()
+{
+  static const bool on = (std::getenv ("NATIG_PERF_TRACE") != nullptr);
+  return on;
+}
+
 NS_OBJECT_ENSURE_REGISTERED (Dnp3ApplicationNew);
 
 std::string&
@@ -1531,8 +1540,9 @@ Dnp3ApplicationNew::save_data(Ptr<Socket> socket, Ptr<Packet> packet, Address fr
     SeqTsHeader seqTs;
     packet->RemoveHeader (seqTs);
     uint32_t currentSequenceNumber = seqTs.GetSeq ();
-    std::ofstream outfile;
-    if(not (access( "perf.txt", F_OK ) == 0)){
+    if (natigPerfTrace ()) {
+     std::ofstream outfile;
+     if(not (access( "perf.txt", F_OK ) == 0)){
        outfile.open("perf.txt", std::ios_base::app);
        outfile << "Timestamp : Bytes Received : From IP : Node ID : Sequence Number : Packet UID\n"; // : Delay\n";
        outfile.close();
@@ -1545,8 +1555,9 @@ Dnp3ApplicationNew::save_data(Ptr<Socket> socket, Ptr<Packet> packet, Address fr
      " : " << m_remoteAddress <<
      " : " << currentSequenceNumber <<
      " : " << packet->GetUid () << "\n";
-     //" : " << Simulator::Now () - seqTs.GetTs () << "\n";		    
+     //" : " << Simulator::Now () - seqTs.GetTs () << "\n";
      outfile.close();
+    }
   }
 
 }
@@ -2237,8 +2248,9 @@ Dnp3ApplicationNew::Record (Ptr<Packet> packet, Address from)
     if (packet->GetSize () > 0)
     {
        uint32_t receivedSize = packet->GetSize ();
-       std::ofstream outfile;
-       if(not (access( "perf.txt", F_OK ) == 0)){
+       if (natigPerfTrace ()) {
+        std::ofstream outfile;
+        if(not (access( "perf.txt", F_OK ) == 0)){
 	     outfile.open("perf.txt", std::ios_base::app);
              outfile << "Timestamp : Bytes Received : From IP : Node ID : Packet UID\n";
              outfile.close();
@@ -2251,6 +2263,7 @@ Dnp3ApplicationNew::Record (Ptr<Packet> packet, Address from)
         " : " << m_remoteAddress <<
         " : " << packet->GetUid () << "\n";
         outfile.close();
+       }
 
       }
    }

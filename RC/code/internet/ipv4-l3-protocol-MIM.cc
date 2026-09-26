@@ -44,10 +44,21 @@
 #include "icmpv4-l4-protocol.h"
 #include "ipv4-interface.h"
 #include "ipv4-raw-socket-impl.h"
+#include <cstdlib>
 
 namespace ns3 {
 
 NS_LOG_COMPONENT_DEFINE ("Ipv4L3ProtocolMIM");
+
+// Per-packet perf tracing to PerNodePerf.csv is OFF by default: it appended one
+// line per packet to a shared file in the build dir that grew to hundreds of GB
+// and dominated DNP3 runtime. Set the env var NATIG_PERF_TRACE (any value) to
+// re-enable it for debugging.
+static bool natigPerfTrace ()
+{
+  static const bool on = (std::getenv ("NATIG_PERF_TRACE") != nullptr);
+  return on;
+}
 
 const uint16_t Ipv4L3ProtocolMIM::PROT_NUMBER = 0x0800;
 
@@ -653,9 +664,11 @@ Ipv4L3ProtocolMIM::Receive ( Ptr<NetDevice> device, Ptr<const Packet> p, uint16_
   //std::cout << "Node Address " << m_node->GetObject<Ipv4> ()->GetAddress (1,0) << std::endl;
   //std::cout << "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC" << std::endl;
 
-  std::ofstream outfile;
-  outfile.open("PerNodePerf.csv", std::ios_base::app); // append instead of overwrite
-  outfile <<Simulator::Now ().GetSeconds ()<<";receive;" << p->GetSize() << ";" << ipHeaderss.GetSource() << ";" << ipHeaderss.GetDestination() << ";" << this->GetObject<Node> ()->GetObject<Ipv4> ()->GetAddress (1,0) << "\n";
+  if (natigPerfTrace ()) {
+    std::ofstream outfile;
+    outfile.open("PerNodePerf.csv", std::ios_base::app); // append instead of overwrite
+    outfile <<Simulator::Now ().GetSeconds ()<<";receive;" << p->GetSize() << ";" << ipHeaderss.GetSource() << ";" << ipHeaderss.GetDestination() << ";" << this->GetObject<Node> ()->GetObject<Ipv4> ()->GetAddress (1,0) << "\n";
+  }
 
   //Adding jitter to the packet that is captured
   //Ptr<ArpL3Protocol> arp = m_node->GetObject<ArpL3Protocol> ();
@@ -1116,9 +1129,11 @@ Ipv4L3ProtocolMIM::SendRealOut (Ptr<Ipv4Route> route,
   //std::cout << "Node ID " << outDev->GetIfIndex () << std::endl;
   //std::cout << "Node Address " << this->GetObject<Node> ()->GetObject<Ipv4> ()->GetAddress (1,0) << std::endl;
 
-  std::ofstream outfile;
-  outfile.open("PerNodePerf.csv", std::ios_base::app); // append instead of overwrite
-  outfile << Simulator::Now ().GetSeconds ()<<";send;" << packet->GetSize() << ";" << ipHeaderss.GetSource() << ";" << ipHeaderss.GetDestination() << ";" << this->GetObject<Node> ()->GetObject<Ipv4> ()->GetAddress (1,0) << "\n";
+  if (natigPerfTrace ()) {
+    std::ofstream outfile;
+    outfile.open("PerNodePerf.csv", std::ios_base::app); // append instead of overwrite
+    outfile << Simulator::Now ().GetSeconds ()<<";send;" << packet->GetSize() << ";" << ipHeaderss.GetSource() << ";" << ipHeaderss.GetDestination() << ";" << this->GetObject<Node> ()->GetObject<Ipv4> ()->GetAddress (1,0) << "\n";
+  }
 
 
   Ipv4Address target;
