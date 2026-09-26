@@ -59,9 +59,21 @@
 #include "ns3/point-to-point-helper.h"
 #include <ns3/antenna-module.h>
 
-#include <json/json.h>
-#include <json/forwards.h>
-#include <json/writer.h>
+#if defined(__has_include)
+  #if __has_include(<jsoncpp/json/json.h>)
+    #include <jsoncpp/json/json.h>
+    #include <jsoncpp/json/forwards.h>
+    #include <jsoncpp/json/writer.h>
+  #else
+    #include <json/json.h>
+    #include <json/forwards.h>
+    #include <json/writer.h>
+  #endif
+#else
+  #include <json/json.h>
+  #include <json/forwards.h>
+  #include <json/writer.h>
+#endif
 #include "ns3/olsr-helper.h"
 #include <filesystem>
 #include <iostream>
@@ -103,6 +115,14 @@ float epsilon_min = 0.01;
 float epsilon_decay = 0.5;
 float alpha = 0.3;
 int period_routing = 150;
+// tpFileDir controls where Throughput() writes TP.txt/TP-Prob.txt (see
+// below). Declared here at global scope, not as a main()-local, because
+// Throughput() is defined in this file *before* main() and can't see a
+// local declared inside it -- a plain function-local here would compile
+// but silently never take effect from Throughput()'s point of view.
+// main() only assigns into this via cmd.AddValue("tpFileDir", ...); it
+// does not re-declare it.
+std::string tpFileDir = "./";
 void readMicroGridConfig(std::string fpath, Json::Value& configobj)
 {
     std::ifstream tifs(fpath);
@@ -140,9 +160,8 @@ void Throughput (){
 
         //std::stringstream netStatsOut;
         std::stringstream netStatsOut2;
-        std::string loc = std::getenv("RD2C");
-        std::string loc1 = loc + "/integration/control/TP-Prob.txt";
-        std::string loc2 = loc + "/integration/control/TP.txt";
+        std::string loc1 = tpFileDir + "TP-Prob.txt";
+        std::string loc2 = tpFileDir + "TP.txt";
         string proto;
         map< FlowId, FlowMonitor::FlowStats > stats = flowMonitor->GetFlowStats();
         std::vector <Ptr<FlowProbe>> xx = flowMonitor->GetAllProbes();
@@ -503,6 +522,7 @@ main (int argc, char *argv[])
   cmd.AddValue("topologyConfig", "NS3 topology configuration file path", topologyConfigFileName);
   cmd.AddValue("pointFileDir", "Points file path", pointFileDir);
   cmd.AddValue("pcapFileDir", "PCAP output file path", pcapFileDir);
+  cmd.AddValue("tpFileDir", "TP output file path", tpFileDir);
   cmd.Parse(argc, argv);
 
   readMicroGridConfig(configFileName, configObject);
