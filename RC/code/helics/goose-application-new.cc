@@ -1166,6 +1166,9 @@ GooseApplicationNew::HandleRead (Ptr<Socket> socket)
         }
       else
         {
+          std::cerr << "GOOSE REJECT: stale/duplicate frame discarded, goID=" << pdu.goID
+                    << " stNum=" << pdu.stNum << " sqNum=" << pdu.sqNum
+                    << " at time " << Simulator::Now ().GetSeconds () << "s" << std::endl;
           NS_LOG_LOGIC ("GooseApplication (subscriber): stale/duplicate frame discarded, "
                         "stNum=" << pdu.stNum << " sqNum=" << pdu.sqNum);
         }
