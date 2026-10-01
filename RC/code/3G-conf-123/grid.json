@@ -261,9 +261,9 @@
                     	"subNode"
                     ],
                     "NodeID": [
-                    	2
+                    	0
                     ],
-                    "endPoint": "MIM",
+                    "endPoint": "subNode",
                     "ConnectionsPerBot": 50,
                     "ConnectRate": 0.5,
                     "TrickleBytes": 0,
