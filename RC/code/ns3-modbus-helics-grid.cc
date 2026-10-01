@@ -139,6 +139,26 @@ float epsilon_min = 0.01;
 float epsilon_decay = 0.5;
 float alpha = 0.3;
 int period_routing = 150;
+
+// Source address the hub's routing table would stamp on a packet sent toward
+// `peer` -- i.e. the address a TCP master on the hub actually uses, and so the
+// address the outstation's replies come back to. Used to wire the MIM node's
+// victimAddr. Returns Ipv4Address::GetAny() when no route exists (e.g. routes
+// not populated yet), so the caller can fall back to a fixed interface.
+static Ipv4Address
+HubSourceAddressToward (Ptr<Node> hub, Ipv4Address peer)
+{
+  Ptr<Ipv4> hubIpv4 = hub->GetObject<Ipv4> ();
+  if (!hubIpv4) { return Ipv4Address::GetAny (); }
+  Ptr<Ipv4RoutingProtocol> routing = hubIpv4->GetRoutingProtocol ();
+  if (!routing) { return Ipv4Address::GetAny (); }
+  Ipv4Header header;
+  header.SetDestination (peer);
+  Socket::SocketErrno err = Socket::ERROR_NOTERROR;
+  Ptr<Ipv4Route> route = routing->RouteOutput (Create<Packet> (), header, Ptr<NetDevice> (), err);
+  return route ? route->GetSource () : Ipv4Address::GetAny ();
+}
+
 void readMicroGridConfig(std::string fpath, Json::Value& configobj)
 {
     std::ifstream tifs(fpath);
@@ -1076,20 +1096,60 @@ main (int argc, char *argv[])
                   Names::Add(ep_name, tempnode);
                   std::string enamestring = ep_name;
                   Ptr<Ipv4> ip = Names::Find<Node>(enamestring)->GetObject<Ipv4>();
-                  int ID = MIM_ID-1;
+                  // BUG FIX (loopback victimAddr): this used to be
+                  // `int ID = MIM_ID-1;`, fed straight into
+                  // hubNode->GetAddress(ID,0). That is the star-helper
+                  // call GetHubIpv4Address(MIM_ID-1) translated to a raw
+                  // Ipv4::GetAddress() index, but Ipv4 interface indices
+                  // start at 1 (interface 0 is loopback), so the "-1"
+                  // landed on 127.0.0.1 for MIM_ID=1 and on the wrong
+                  // spoke for every other MIM_ID. With a loopback victim,
+                  // Ipv4L3ProtocolMIM never claims the real return
+                  // traffic and instead rewrites the source address of
+                  // every packet the armed MIM node forwards. Upstream's
+                  // own (now commented-out) wiring above used
+                  // `ID = MIM_ID; if (ring) ID = 1;`, which is what the
+                  // fallback below restores.
+                  int ID = ring ? 1 : MIM_ID;
 
       // Ipv4L3ProtocolMIM/victimAddr is a protocol-agnostic IP-layer
       // mechanism (operates purely on IP addresses inside the L3
       // Send/Forward path, with no awareness of what protocol is
       // running above it) -- reused here completely unchanged from
       // DNP3's wiring, per project discussion.
-      ip->GetObject<Ipv4L3ProtocolMIM> ()->victimAddr = hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal(); //star.GetHubIpv4Address(MIM_ID-1);
+      //
+      // victimAddr must be the address the outstation's replies are
+      // addressed TO. Over UDP (DNP3) that is always the configured
+      // RemoteAddress (hub interface ID), but Modbus is TCP, where the
+      // outstation replies to whatever source address the master's
+      // stack picked for the connection, i.e. the source of the hub's
+      // route toward this microgrid. Ask the routing table (populated
+      // above) for exactly that, and fall back to hub interface ID if
+      // there is no route yet.
+      Ipv4Address hubFallbackAddr = hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID,0).GetLocal();
+      Ipv4Address mgAddr = Microgrid.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal();
+      Ipv4Address hubRouteSrc = HubSourceAddressToward (hubNode.Get(0), mgAddr);
+      Ipv4Address victimAddress = (hubRouteSrc != Ipv4Address::GetAny ()) ? hubRouteSrc : hubFallbackAddr;
+      // std::cout, not NS_LOG_*: compiled out in this build's optimized profile.
+      std::cout << "MIM victim wiring: MIM_ID=" << MIM_ID << " ring=" << ring
+                << " hubIface" << ID << "Addr=" << hubFallbackAddr
+                << " hubRouteSrcToMg(" << mgAddr << ")=" << hubRouteSrc
+                << " -> victimAddr=" << victimAddress << std::endl;
+      if (hubRouteSrc != Ipv4Address::GetAny () && hubRouteSrc != hubFallbackAddr) {
+          std::cout << "[WARN] MIM victim wiring: route-derived hub source differs from hub interface "
+                    << ID << " address; using the route-derived one (TCP replies target it)." << std::endl;
+      }
+      // Hard guard so the loopback regression can never come back silently
+      // (NS_ABORT_*, unlike NS_ASSERT, is not compiled out in optimized builds).
+      NS_ABORT_MSG_IF (victimAddress.IsLocalhost () || victimAddress == Ipv4Address::GetAny (),
+                       "MIM victimAddr resolved to " << victimAddress << " for MIM_ID=" << MIM_ID);
+      ip->GetObject<Ipv4L3ProtocolMIM> ()->victimAddr = victimAddress; //star.GetHubIpv4Address(MIM_ID-1);
 
 
       //scenario 1, 2 and 3
-      ModbusApplicationHelperNew modbusMIM1 ("ns3::TcpSocketFactory", InetSocketAddress (MIMNode.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address(MIM_ID-1),port)); 
+      ModbusApplicationHelperNew modbusMIM1 ("ns3::TcpSocketFactory", InetSocketAddress (MIMNode.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal(), port)); //star.GetSpokeIpv4Address(MIM_ID-1),port));
       modbusMIM1.SetAttribute("LocalPort", UintegerValue(port));
-      modbusMIM1.SetAttribute("RemoteAddress", AddressValue(hubNode.Get(0)->GetObject<Ipv4>()->GetAddress(ID, 0).GetLocal())); //star.GetHubIpv4Address(MIM_ID-1)));
+      modbusMIM1.SetAttribute("RemoteAddress", AddressValue(victimAddress)); //star.GetHubIpv4Address(MIM_ID-1)));
       if(std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 3 || std::stoi(attack["MIM-"+std::to_string(MIM_ID)+"-attack_type"]) == 4){
           modbusMIM1.SetAttribute("RemoteAddress2", AddressValue(Microgrid.Get(MIM_ID-1)->GetObject<Ipv4>()->GetAddress(1,0).GetLocal()));
       }
