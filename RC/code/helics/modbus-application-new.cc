@@ -1916,6 +1916,17 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
       m_txTrace (packet);
       NS_LOG_INFO ("ModbusApplication::handle_MIM >>> processing packet at time "
                    << Simulator::Now ().GetSeconds () << "s");
+      // [MIM-HIT] smoke-test instrumentation: definitively prove handle_MIM
+      // actually receives traffic (NS_LOG_INFO above is compiled out in the
+      // optimized build). Low-volume: first packet + every 500th. std::cerr.
+      {
+        static uint64_t s_mimHitCount = 0;
+        if (++s_mimHitCount == 1 || s_mimHitCount % 500 == 0)
+          std::cerr << "[MIM-HIT] ModbusApplication::handle_MIM received packet #"
+                    << s_mimHitCount << " at t=" << Simulator::Now ().GetSeconds ()
+                    << "s (node " << (GetNode () ? (int) GetNode ()->GetId () : -1)
+                    << ")" << std::endl;
+      }
 
       // -- Decode the underlying Modbus request first; we need its --
       // -- address/function code to know which point is being touched --

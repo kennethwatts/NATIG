@@ -1792,6 +1792,18 @@ MmsApplicationNew::handle_MIM (Ptr<Socket> socket)
       m_txTrace (packet);
       NS_LOG_INFO ("MmsApplication::handle_MIM >>> processing packet at time "
                    << Simulator::Now ().GetSeconds () << "s");
+      // [MIM-HIT] smoke-test instrumentation: definitively prove handle_MIM
+      // actually receives traffic. Critical for MMS because its attack
+      // branches below use NS_LOG_WARN (compiled out) -- without this a
+      // firing replay would still print nothing. Low-volume std::cerr.
+      {
+        static uint64_t s_mimHitCount = 0;
+        if (++s_mimHitCount == 1 || s_mimHitCount % 500 == 0)
+          std::cerr << "[MIM-HIT] MmsApplication::handle_MIM received packet #"
+                    << s_mimHitCount << " at t=" << Simulator::Now ().GetSeconds ()
+                    << "s (node " << (GetNode () ? (int) GetNode ()->GetId () : -1)
+                    << ")" << std::endl;
+      }
 
       // MIM/insider instances are installed as server-role (see the
       // topology file's install call sites) and always decode the
@@ -1970,6 +1982,9 @@ MmsApplicationNew::handle_MIM (Ptr<Socket> socket)
                           SetAnalogPoint (requestPdu.objectReference, it->second);
                           NS_LOG_INFO ("MmsApplication::handle_MIM: replayed captured value " << it->second
                                        << " for " << requestPdu.objectReference);
+                          std::cerr << "MmsApplication::handle_MIM: attack_type 5 fired for "
+                                    << requestPdu.objectReference << " (replayed analog value "
+                                    << it->second << ")" << std::endl;
                         }
                       else
                         {
@@ -1985,6 +2000,9 @@ MmsApplicationNew::handle_MIM (Ptr<Socket> socket)
                           SetBinaryPoint (requestPdu.objectReference, it->second);
                           NS_LOG_INFO ("MmsApplication::handle_MIM: replayed captured state "
                                        << it->second << " for " << requestPdu.objectReference);
+                          std::cerr << "MmsApplication::handle_MIM: attack_type 5 fired for "
+                                    << requestPdu.objectReference << " (replayed binary state "
+                                    << it->second << ")" << std::endl;
                         }
                       else
                         {
