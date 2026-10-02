@@ -62,6 +62,10 @@
 #include <cctype>
 #include <cmath>
 #include <stdexcept>
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+#include <set>
 #include "ns3/packet.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/inet6-socket-address.h"
@@ -370,34 +374,87 @@ ModbusApplicationNew::get_val_vector (std::string delimiter, std::string m_attac
   return val;
 }
 
+// -------------------------------------------------------------------
+// parseMimFloat -- exception-free float parse for the per-packet MIM
+// config path. GetVal()/get_val() run on every intercepted packet once
+// an attack window is open, which on the slow Modbus jobs can be many
+// hours into a run, so a malformed or missing config token must degrade
+// that one point's attack instead of throwing out of the simulator
+// (the same crash class the FDI safeStof guards below close). Warns
+// once per distinct (context, token) pair so a bad config cannot spam
+// stderr once per packet. std::cerr, not NS_LOG_*: compiled out in this
+// build's optimized profile.
+// -------------------------------------------------------------------
+static void
+warnMimOnce (const std::string& key, const std::string& message)
+{
+  static std::set<std::string> warned;
+  if (warned.insert (key).second)
+    {
+      std::cerr << "[WARN] " << message << std::endl;
+    }
+}
+
+static float
+parseMimFloat (const std::string& s, float defaultValue, const std::string& context)
+{
+  const char* begin = s.c_str ();
+  char* end = nullptr;
+  errno = 0;
+  float v = std::strtof (begin, &end);
+  if (end == begin || errno == ERANGE)
+    {
+      warnMimOnce (context + "|" + s,
+                   context + ": could not parse '" + s + "' as a float, using default");
+      return defaultValue;
+    }
+  return v;
+}
+
 float
 ModbusApplicationNew::get_val (std::vector<std::string> val, std::vector<std::string> val_min,
                                 std::vector<std::string> val_max, int index)
 {
-  float f = 0.0;
-  if (static_cast<size_t>(index) < val_min.size () && static_cast<size_t>(index) < val_max.size ())
+  // Returns NaN (never throws) when the attack value is missing or
+  // unparsable, so the caller can skip the injection and leave the real
+  // value in place -- same fallback apply_fdi uses for a bad Value_attck.
+  const float bad = std::numeric_limits<float>::quiet_NaN ();
+  if (index < 0)
     {
-      bool minIsNumeric = !val_min[index].empty ()
-        && std::find_if (val_min[index].begin (), val_min[index].end (),
-                          [](unsigned char c) { return !std::isdigit (c); }) == val_min[index].end ();
-      bool maxIsNumeric = !val_max[index].empty ()
-        && std::find_if (val_max[index].begin (), val_max[index].end (),
-                          [](unsigned char c) { return !std::isdigit (c); }) == val_max[index].end ();
+      return bad;
+    }
+  const size_t idx = static_cast<size_t>(index);
+  float f = bad;
+  if (idx < val_min.size () && idx < val_max.size ())
+    {
+      bool minIsNumeric = !val_min[idx].empty ()
+        && std::find_if (val_min[idx].begin (), val_min[idx].end (),
+                          [](unsigned char c) { return !std::isdigit (c); }) == val_min[idx].end ();
+      bool maxIsNumeric = !val_max[idx].empty ()
+        && std::find_if (val_max[idx].begin (), val_max[idx].end (),
+                          [](unsigned char c) { return !std::isdigit (c); }) == val_max[idx].end ();
 
       if (minIsNumeric && maxIsNumeric)
         {
           float r = (rand () % 10) + 1;
           NS_LOG_INFO ("ModbusApplication::get_val: random selector " << r);
-          f = (r > 5) ? std::stof (val_min[index]) : std::stof (val_max[index]);
+          f = parseMimFloat ((r > 5) ? val_min[idx] : val_max[idx], bad, "ModbusApplication::get_val min/max");
         }
-      else
+      else if (idx < val.size ())
         {
-          f = std::stof (val[index]);
+          f = parseMimFloat (val[idx], bad, "ModbusApplication::get_val attack_val");
         }
     }
-  else
+  else if (idx < val.size ())
     {
-      f = std::stof (val[index]);
+      f = parseMimFloat (val[idx], bad, "ModbusApplication::get_val attack_val");
+    }
+
+  if (std::isnan (f))
+    {
+      warnMimOnce ("get_val|" + std::to_string (index),
+                   "ModbusApplication::get_val: no usable attack value for point index "
+                   + std::to_string (index) + " (missing or malformed attack_val); skipping injection");
     }
   return f;
 }
@@ -428,10 +485,10 @@ ModbusApplicationNew::GetVal (std::map<std::string, std::string> attack, std::st
   while ((pos = attack[key].find (delimiter)) != std::string::npos)
     {
       token = attack[key].substr (0, pos);
-      timer.push_back (std::stof (token));
+      timer.push_back (parseMimFloat (token, 0.0f, "ModbusApplication::GetVal " + key));
       attack[key].erase (0, pos + delimiter.length ());
     }
-  timer.push_back (std::stof (attack[key]));
+  timer.push_back (parseMimFloat (attack[key], 0.0f, "ModbusApplication::GetVal " + key));
   return timer;
 }
 
@@ -1308,10 +1365,10 @@ ModbusApplicationNew::makeTcpConnection (void)
   while ((pos = m_attackStartTime.find (delimiter)) != std::string::npos)
     {
       token = m_attackStartTime.substr (0, pos);
-      timer.push_back (std::stof (token));
+      timer.push_back (safeStof (token, 0.0f, "Modbus MIM AttackStartTime"));
       m_attackStartTime.erase (0, pos + delimiter.length ());
     }
-  timer.push_back (std::stof (m_attackStartTime));
+  timer.push_back (safeStof (m_attackStartTime, 0.0f, "Modbus MIM AttackStartTime"));
 
   std::vector<float> timer_end;
   size_t pos1 = 0;
@@ -1319,10 +1376,10 @@ ModbusApplicationNew::makeTcpConnection (void)
   while ((pos1 = m_attackEndTime.find (delimiter)) != std::string::npos)
     {
       token1 = m_attackEndTime.substr (0, pos1);
-      timer_end.push_back (std::stof (token1));
+      timer_end.push_back (safeStof (token1, 0.0f, "Modbus MIM AttackEndTime"));
       m_attackEndTime.erase (0, pos1 + delimiter.length ());
     }
-  timer_end.push_back (std::stof (m_attackEndTime));
+  timer_end.push_back (safeStof (m_attackEndTime, 0.0f, "Modbus MIM AttackEndTime"));
 
   for (size_t index = 0; index < timer.size (); index++)
     {
@@ -1337,7 +1394,7 @@ ModbusApplicationNew::makeTcpConnection (void)
                   Simulator::Schedule (Seconds (timer[index]), &ModbusApplicationNew::set_attack, this, true);
                   StartVect.push_back (std::to_string (timer[index]));
                 }
-              if (timer_end[index])
+              if (index < timer_end.size () && timer_end[index])
                 {
                   Simulator::Schedule (Seconds (timer_end[index]), &ModbusApplicationNew::set_attack, this, false);
                   StopVect.push_back (std::to_string (timer_end[index]));
@@ -1355,7 +1412,7 @@ ModbusApplicationNew::makeTcpConnection (void)
                   Simulator::Schedule (Seconds (timer[index]), &ModbusApplicationNew::set_attack, this, true);
                   StartVect.push_back (std::to_string (timer[index]));
                 }
-              if (timer_end[index])
+              if (index < timer_end.size () && timer_end[index])
                 {
                   Simulator::Schedule (Seconds (timer_end[index]), &ModbusApplicationNew::set_attack, this, false);
                   StopVect.push_back (std::to_string (timer_end[index]));
@@ -2046,27 +2103,41 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                     {
                       // False data injection on a register (analog-equivalent)
                       float f = get_val (val, val_min, val_max, qq);
-                      uint16_t scale = GetRegisterScale (requestPdu.address);
-                      SetHoldingRegister (requestPdu.address, static_cast<uint16_t>(std::round (f / scale)));
-                      float reconstructed = static_cast<float>(GetHoldingRegister (requestPdu.address)) * scale;
-                      // std::cout, not NS_LOG_*: compiled out in this build's optimized
-                      // profile (see feedback_ns3_build_environment_gotchas.md) -- this
-                      // line is the scale-fix validation evidence, so it must actually
-                      // print, not silently no-op.
-                      std::cout << "ModbusApplication::handle_MIM: injected false register value "
-                                << f << " at address " << requestPdu.address
-                                << " (scale " << scale << ", register readback reconstructs to "
-                                << reconstructed << ")" << std::endl;
+                      if (!std::isnan (f))
+                        {
+                          uint16_t scale = GetRegisterScale (requestPdu.address);
+                          SetHoldingRegister (requestPdu.address, static_cast<uint16_t>(std::round (f / scale)));
+                          float reconstructed = static_cast<float>(GetHoldingRegister (requestPdu.address)) * scale;
+                          // std::cout, not NS_LOG_*: compiled out in this build's optimized
+                          // profile (see feedback_ns3_build_environment_gotchas.md) -- this
+                          // line is the scale-fix validation evidence, so it must actually
+                          // print, not silently no-op.
+                          std::cout << "ModbusApplication::handle_MIM: injected false register value "
+                                    << f << " at address " << requestPdu.address
+                                    << " (scale " << scale << ", register readback reconstructs to "
+                                    << reconstructed << ")" << std::endl;
+                        }
+                      // else: get_val already warned (once) -- bad/missing attack_val, so the
+                      // real register value is left untouched rather than injecting garbage.
                     }
                   else if (attackTypeInt == 3)
                     {
                       // Forced control command on a coil (binary-equivalent)
-                      bool forcedState = (val[qq].find ("TRIP") != std::string::npos
-                                          || val[qq].find ("LATCH_OFF") != std::string::npos)
-                                         ? false : true;
-                      SetCoil (requestPdu.address, forcedState);
-                      NS_LOG_INFO ("ModbusApplication::handle_MIM: forced coil at address "
-                                   << requestPdu.address << " to " << (forcedState ? "ON" : "OFF"));
+                      if (qq < val.size ())
+                        {
+                          bool forcedState = (val[qq].find ("TRIP") != std::string::npos
+                                              || val[qq].find ("LATCH_OFF") != std::string::npos)
+                                             ? false : true;
+                          SetCoil (requestPdu.address, forcedState);
+                          NS_LOG_INFO ("ModbusApplication::handle_MIM: forced coil at address "
+                                       << requestPdu.address << " to " << (forcedState ? "ON" : "OFF"));
+                        }
+                      else
+                        {
+                          warnMimOnce ("type3|" + std::to_string (qq),
+                                       "ModbusApplication::handle_MIM: attack_type 3 has no attack_val for point index "
+                                       + std::to_string (qq) + "; skipping forced command");
+                        }
                     }
                   else if (attackTypeInt == 5)
                     {
