@@ -200,6 +200,7 @@ public:
     void calc_crc(Bytes buf_temp, uint8_t * temp2, Ptr<Packet> testPack);
     std::vector<std::string> get_val_vector (std::string delimiter, std::string m_attack_val);
     int start_byte(uint8_t * temp2, Ptr<Packet> testPack);
+    std::vector<size_t> find_point_byte_indices(uint8_t * temp2, Ptr<Packet> testPack, Bytes& buf2, int idPointTarget);
     float get_val(std::vector<std::string> val, std::vector<std::string> val_min, std::vector<std::string> val_max, int index);
     void SetEndpointName (const std::string &name, bool is_global);
     void EndpointCallback (helics::Endpoint id, helics::Time time);
@@ -310,6 +311,7 @@ private:
   std::string m_attack_point_val;
   std::string m_attack_max;
   std::string m_attack_min;
+  std::map<std::string, std::vector<uint8_t>> m_replayCapture; //!< attack_type 5: last real bytes captured per point, frozen once its attack window opens
   uint16_t m_attackType;
   uint16_t MIM_ID;
   std::string m_attackStartTime;
