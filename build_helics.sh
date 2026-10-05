@@ -12,7 +12,7 @@ cp -r /rd2c/PUSH/NATIG/RC/code/helics/mms-application-helper-new.* /rd2c/ns-3-de
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/mms-application-new* /rd2c/ns-3-dev/contrib/helics/model/
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/goose-application-helper-new.* /rd2c/ns-3-dev/contrib/helics/helper/
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/goose-application-new* /rd2c/ns-3-dev/contrib/helics/model/
-cp -r /rd2c/ns-3-dev/contrib/helics/model/dnp3-application-new-Docker.h /rd2c/ns-3-dev/contrib/helics/model/dnp3-application-new.h
-cp -r /rd2c/ns-3-dev/contrib/helics/model/dnp3-application-new-Docker.cc /rd2c/ns-3-dev/contrib/helics/model/dnp3-application-new.cc
+# The regular dnp3-application-new.cc/.h (copied by the dnp3-application-new* glob above) is
+# used for Docker too; the Docker-specific variant was retired (see build_ns3.sh note).
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/wscript /rd2c/ns-3-dev/contrib/helics/
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/helics-simulator-impl.cc /rd2c/ns-3-dev/contrib/helics/model/

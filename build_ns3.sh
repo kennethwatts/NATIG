@@ -59,8 +59,10 @@ cp -r /rd2c/PUSH/NATIG/RC/code/helics/goose-application-helper-new.* /rd2c/ns-3-
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/goose-application-new* /rd2c/ns-3-dev/contrib/helics/model/
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/slowloris-bot-application-helper.* /rd2c/ns-3-dev/contrib/helics/helper/
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/slowloris-bot-application.* /rd2c/ns-3-dev/contrib/helics/model/
-cp -r /rd2c/PUSH/NATIG/RC/code/helics/dnp3-application-new-Docker.cc /rd2c/ns-3-dev/contrib/helics/model/dnp3-application-new.cc
-cp -r /rd2c/PUSH/NATIG/RC/code/helics/dnp3-application-new-Docker.h /rd2c/ns-3-dev/contrib/helics/model/dnp3-application-new.h
+# The regular dnp3-application-new.cc/.h (copied by the dnp3-application-new* glob above) is
+# used for Docker too. The former Docker-specific variant was retired: its jsoncpp include is
+# handled in the regular file by an __has_include guard, and the variant had gone stale across
+# attack_type-5/FDI-attribute/FDI-logic/stof-hardening relative to the regular file.
 cp -r /rd2c/PUSH/NATIG/RC/code/helics/wscript /rd2c/ns-3-dev/contrib/helics/
 sudo ./make.sh $2
 if [ "$1" == "5G" ]; then
