@@ -6,16 +6,22 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=96G
 #SBATCH --time=19:00:00
-#SBATCH --array=0-1199%50
+#SBATCH --array=0-1399%50
 #SBATCH --output=/project/pi_vinod_vokkarane_uml_edu/kenneth_watts/natig/logs/natig_v2_%A_%a.log
 #SBATCH --error=/project/pi_vinod_vokkarane_uml_edu/kenneth_watts/natig/logs/natig_v2_%A_%a.err
 
 # ── Array index → scenario + run ID mapping ───────────────────────────────────
-# 12 scenarios × 100 runs each = 1200 tasks (indices 0-1199)
+# 14 scenarios × 100 runs each = 1400 tasks (indices 0-1399)
 #   0-99:    normal-dnp3       100-199:  fdi-dnp3          200-299:  replay-dnp3
 #   300-399: normal-modbus     400-499:  fdi-modbus        500-599:  slowddos-modbus
 #   600-699: normal-mms        700-799:  fdi-mms           800-899:  slowddos-mms
 #   900-999: normal-goose      1000-1099: fdi-goose        1100-1199: replay-goose
+#   1200-1299: replay-modbus   1300-1399: replay-mms
+#
+# replay-modbus/replay-mms added 2026-10-12, once the Modbus/MMS attack_type 5
+# (replay) implementation actually existed in the deployed binary (see
+# integrate/replay) — appended at the end rather than inserted by protocol so
+# the index mapping for the original 12 scenarios never shifts.
 #
 # Config source for each scenario: runs/3G-conf-123-<TAG>/config/
 # (generated + verified separately — see grid.json isolation check before using)
@@ -36,6 +42,8 @@ SCENARIOS=(
     "normal-goose:goose"
     "fdi-goose:goose"
     "replay-goose:goose"
+    "replay-modbus:modbus"
+    "replay-mms:mms"
 )
 
 IDX=${SLURM_ARRAY_TASK_ID}
