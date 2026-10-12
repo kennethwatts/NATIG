@@ -896,15 +896,26 @@ main (int argc, char *argv[])
   // commented-out second calls at other lines are a pre-existing record
   // of the same landmine). Application install (which needs `port`,
   // not yet declared here) happens later, gated on SlowDDoS.Active.
-  // isMember() guard: configs written before the SlowDDoS key existed
-  // (only had DDoS/MIM) would otherwise crash right here, before Active
-  // is ever checked -- node creation below happens unconditionally.
-  // slowDdosNumBots=0 makes Create(0)/the loop below a safe no-op.
+  //
+  // BUG FIX (replay-modbus SIGABRT, 2026-10-12): configs written before the
+  // SlowDDoS key existed -- or that simply don't need it, like replay-modbus's
+  // MIM-only grid.json (confirmed on Unity: keys are
+  // Controller/DDoS/MIM/Simulation/controlCenter/microgrid, no SlowDDoS) --
+  // crashed right here. configObject["SlowDDoS"] on a missing key is
+  // jsoncpp's null Value; ["NumberOfBots"] on that is null too, and
+  // .asString() on null silently returns "", so std::stoi("") throws
+  // std::invalid_argument and the whole process aborts (confirmed via the
+  // exact "terminate called ... what(): stoi" trace, landing right after the
+  // last successful cout, with no isMember() guard anywhere in this file for
+  // either SlowDDoS access site). isMember() guard so a missing key means 0
+  // bots instead: Create(0) and every loop below keyed off slowDdosNumBots
+  // become a safe no-op, matching the same pattern already relied on for
+  // includeMIM/includeFDI being 0.
   bool hasSlowDdosConf = configObject.isMember("SlowDDoS")
       && configObject["SlowDDoS"][0]["NodeID"].size() > 0;
-  int slowDdosNumBots = configObject.isMember("SlowDDoS")
+  int slowDdosNumBots = hasSlowDdosConf
       ? std::stoi(configObject["SlowDDoS"][0]["NumberOfBots"].asString()) : 0;
-  int slowDdosNumThreads = configObject.isMember("SlowDDoS")
+  int slowDdosNumThreads = hasSlowDdosConf
       ? std::stoi(configObject["SlowDDoS"][0]["threadsPerAttacker"].asString()) : 1;
   int slowDdosNodeID = hasSlowDdosConf
       ? std::stoi(configObject["SlowDDoS"][0]["NodeID"][0].asString()) : 0;
@@ -1428,9 +1439,10 @@ main (int argc, char *argv[])
   // socket (port) instead of flooding raw IP packets at a raw socket
   // victim, gated on SlowDDoS.Active so it's independent of flood-DDoS.
   std::cout << "Setting up Slow-DDoS bots" << std::endl;
-  bool slowDdosActive = configObject.isMember("SlowDDoS")
-      ? std::stoi(configObject["SlowDDoS"][0]["Active"].asString())
-      : false;
+  // Same isMember() guard as the node/link setup above -- configs without a
+  // SlowDDoS key (e.g. replay-modbus) have no "Active" to read either.
+  bool slowDdosActive = hasSlowDdosConf
+      && std::stoi(configObject["SlowDDoS"][0]["Active"].asString());
   if (slowDdosActive) {
     double slowDdosStart = std::stof(configObject["SlowDDoS"][0]["Start"].asString());
     double slowDdosEnd = std::stof(configObject["SlowDDoS"][0]["End"].asString());
