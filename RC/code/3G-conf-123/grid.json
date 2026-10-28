@@ -263,7 +263,7 @@
                     "NodeID": [
                     	2
                     ],
-                    "endPoint": "MIM",
+                    "endPoint": "subNode",
                     "ConnectionsPerBot": 50,
                     "ConnectRate": 0.5,
                     "TrickleBytes": 0,
