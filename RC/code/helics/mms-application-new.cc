@@ -58,6 +58,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <stdexcept>
 #include "ns3/packet.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/inet6-socket-address.h"
@@ -251,6 +252,7 @@ MmsApplicationNew::MmsApplicationNew ()
   m_rand_delay_ns = CreateObject<UniformRandomVariable> ();
   m_rand_delay_ns->SetAttribute ("Min", DoubleValue (m_jitterMinNs));
   m_rand_delay_ns->SetAttribute ("Max", DoubleValue (m_jitterMaxNs));
+  m_fdiRand = CreateObject<UniformRandomVariable> ();
 }
 
 MmsApplicationNew::~MmsApplicationNew ()
@@ -470,6 +472,55 @@ MmsApplicationNew::GetFrozenBinaryPoint (const std::string &objectReference) con
   return (it != m_frozenDeviceConfig.binaryValues.end ()) ? it->second : false;
 }
 
+// safeStof/safeStod -- FDI config values (Value_attck, AttackStartTime,
+// AttackEndTime) come from grid.json/AttackConf and can be malformed or
+// empty; std::stof/std::stod throw std::invalid_argument/std::out_of_range
+// uncaught on that, crashing the whole simulation. This is the same crash
+// class the MIM GetVal guard above closes -- see PR review from Oceane Bel
+// (PNNL) on the FDI PR. Duplicated per protocol file, matching this file's
+// existing convention (e.g. get_val_vector) of no shared helics helper header.
+static float
+safeStof (const std::string& s, float defaultValue, const std::string& context)
+{
+  try
+    {
+      return std::stof (s);
+    }
+  catch (const std::invalid_argument&)
+    {
+      std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a float, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+  catch (const std::out_of_range&)
+    {
+      std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for float, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+}
+
+static double
+safeStod (const std::string& s, double defaultValue, const std::string& context)
+{
+  try
+    {
+      return std::stod (s);
+    }
+  catch (const std::invalid_argument&)
+    {
+      std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a double, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+  catch (const std::out_of_range&)
+    {
+      std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for double, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+}
+
 // Compromised-endpoint FDI: same shape as DNP3/Modbus's apply_fdi -- resolves
 // node_id/point_id/Value_attck/AttackChance attributes (set once at topology
 // build time, no runtime JSON re-read) and returns a fabricated value when
@@ -492,13 +543,13 @@ MmsApplicationNew::apply_fdi (const std::string& name, float realValue)
           continue;
         }
 
-      float r = static_cast<float>(rand ()) / static_cast<float>(RAND_MAX);
+      float r = m_fdiRand->GetValue (0.0, 1.0);
       if (m_attackChance <= r)
         {
           return realValue;
         }
 
-      float fabricated = std::stof (vals[i]);
+      float fabricated = safeStof (vals[i], realValue, "apply_fdi Value_attck");
       std::cout << "FDI: outstation " << m_name << " fabricating point " << name << " -> " << fabricated
                  << " (real value " << realValue << ") at time " << Simulator::Now ().GetSeconds () << "s" << std::endl;
       return fabricated;
@@ -555,6 +606,32 @@ MmsApplicationNew::set_attack (bool state)
 {
   NS_LOG_INFO ("MmsApplication::set_attack >>> Start Attack Mode: " << m_attackType);
   m_attack_on = state;
+
+  // Option B fix (Sep 2026): apply_fdi was only ever wired into
+  // store_points(), reached exclusively via the HELICS DoEndpoint path --
+  // which never fires in this codebase (same fix already shipped for
+  // GOOSE/DNP3). Apply FDI directly to this server's own analogValues at
+  // the moment the attack window opens, so a fabricated value actually
+  // reaches a read response. Restoring on attack-end matters because
+  // nothing else ever refreshes these values absent a real Store() --
+  // without it the fabricated value would persist past the window. Guarded
+  // on fdi_flag specifically since set_attack is shared with the separate
+  // rogue/MIM attack mechanism, which must not have its analogValues
+  // touched.
+  if (fdi_flag)
+    {
+      if (state)
+        {
+          for (auto& entry : m_deviceConfig.analogValues)
+            {
+              entry.second = apply_fdi (entry.first, entry.second);
+            }
+        }
+      else
+        {
+          m_deviceConfig.analogValues = m_preAttackAnalogValues;
+        }
+    }
 }
 
 void
@@ -711,6 +788,8 @@ MmsApplicationNew::initConfig (void)
       NS_LOG_INFO ("Unable to open points file:" << points_filename);
       exit (-1);
     }
+
+  m_preAttackAnalogValues = m_deviceConfig.analogValues;
 
   NS_LOG_INFO ("MmsApplication::initConfig: loaded " << analog_point_names.size ()
                << " analog points and " << binary_point_names.size () << " binary points");
@@ -1106,8 +1185,19 @@ MmsApplicationNew::StartApplication ()
     // Unlike handle_MIM (reactive to packet arrival), FDI has a fixed window on the
     // outstation itself, so it can be scheduled once here instead of deduped via
     // StartVect/StopVect on every store_points() call. See DNP3/Modbus's identical addition.
-    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &MmsApplicationNew::set_attack, this, true);
-    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &MmsApplicationNew::set_attack, this, false);
+    double attackStart = safeStod (m_attackStartTime, -1.0, "FDI AttackStartTime");
+    double attackEnd = safeStod (m_attackEndTime, -1.0, "FDI AttackEndTime");
+    if (attackStart < 0.0 || attackEnd < 0.0)
+      {
+        std::cerr << "[WARN] " << "MmsApplicationNew::StartApplication: bad FDI AttackStartTime/"
+                     "AttackEndTime config value for node " << m_name
+                     << " -- FDI disabled for this instance." << std::endl;
+      }
+    else
+      {
+        Simulator::Schedule(Seconds(attackStart), &MmsApplicationNew::set_attack, this, true);
+        Simulator::Schedule(Seconds(attackEnd), &MmsApplicationNew::set_attack, this, false);
+      }
   }
 
   if (!m_enableTcp)

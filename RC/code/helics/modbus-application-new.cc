@@ -61,6 +61,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <stdexcept>
 #include "ns3/packet.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/inet6-socket-address.h"
@@ -254,6 +255,7 @@ ModbusApplicationNew::ModbusApplicationNew ()
   m_rand_delay_ns = CreateObject<UniformRandomVariable> ();
   m_rand_delay_ns->SetAttribute ("Min", DoubleValue (m_jitterMinNs));
   m_rand_delay_ns->SetAttribute ("Max", DoubleValue (m_jitterMaxNs));
+  m_fdiRand = CreateObject<UniformRandomVariable> ();
 }
 
 ModbusApplicationNew::~ModbusApplicationNew ()
@@ -486,6 +488,55 @@ ModbusApplicationNew::GetFrozenCoil (uint16_t address) const
   return (it != m_frozenDeviceConfig.coils.end ()) ? it->second : false;
 }
 
+// safeStof/safeStod -- FDI config values (Value_attck, AttackStartTime,
+// AttackEndTime) come from grid.json/AttackConf and can be malformed or
+// empty; std::stof/std::stod throw std::invalid_argument/std::out_of_range
+// uncaught on that, crashing the whole simulation. This is the same crash
+// class the MIM GetVal guard above closes -- see PR review from Oceane Bel
+// (PNNL) on the FDI PR. Duplicated per protocol file, matching this file's
+// existing convention (e.g. get_val_vector) of no shared helics helper header.
+static float
+safeStof (const std::string& s, float defaultValue, const std::string& context)
+{
+  try
+    {
+      return std::stof (s);
+    }
+  catch (const std::invalid_argument&)
+    {
+      std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a float, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+  catch (const std::out_of_range&)
+    {
+      std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for float, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+}
+
+static double
+safeStod (const std::string& s, double defaultValue, const std::string& context)
+{
+  try
+    {
+      return std::stod (s);
+    }
+  catch (const std::invalid_argument&)
+    {
+      std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a double, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+  catch (const std::out_of_range&)
+    {
+      std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for double, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+}
+
 // Compromised-endpoint FDI: same shape as DNP3's apply_fdi -- resolves
 // node_id/point_id/Value_attck/AttackChance attributes (set once at topology
 // build time, no runtime JSON re-read) and returns a fabricated value when
@@ -508,13 +559,13 @@ ModbusApplicationNew::apply_fdi (const std::string& name, float realValue)
           continue;
         }
 
-      float r = static_cast<float>(rand ()) / static_cast<float>(RAND_MAX);
+      float r = m_fdiRand->GetValue (0.0, 1.0);
       if (m_attackChance <= r)
         {
           return realValue;
         }
 
-      float fabricated = std::stof (vals[i]);
+      float fabricated = safeStof (vals[i], realValue, "apply_fdi Value_attck");
       std::cout << "FDI: outstation " << m_name << " fabricating point " << name << " -> " << fabricated
                  << " (real value " << realValue << ") at time " << Simulator::Now ().GetSeconds () << "s" << std::endl;
       return fabricated;
@@ -570,6 +621,60 @@ ModbusApplicationNew::set_attack (bool state)
 {
   NS_LOG_INFO ("ModbusApplication::set_attack >>> Start Attack Mode: " << m_attackType);
   m_attack_on = state;
+
+  // Option B fix (Sep 2026): apply_fdi was only ever wired into
+  // store_points(), reached exclusively via the HELICS DoEndpoint path --
+  // which never fires in this codebase (same fix already shipped for
+  // GOOSE/DNP3). Apply FDI directly to this outstation's own holding
+  // registers at the moment the attack window opens, so a fabricated value
+  // actually reaches a poll response. Restoring on attack-end matters
+  // because nothing else ever refreshes these values absent a real Store()
+  // -- without it the fabricated value would persist past the window.
+  // Guarded on fdi_flag specifically since set_attack is shared with the
+  // separate rogue/MIM attack mechanism, which must not have its registers
+  // touched.
+  //
+  // Unlike GOOSE/DNP3/MMS, Modbus has no live name-keyed analog value map
+  // -- the real store is address-keyed (m_deviceConfig.holdingRegisters),
+  // so analog_name_to_address bridges name (what apply_fdi matches on) to
+  // address (what Get/SetHoldingRegister operate on).
+  if (fdi_flag)
+    {
+      if (state)
+        {
+          for (const auto& entry : analog_name_to_address)
+            {
+              uint16_t addr = entry.second;
+              uint16_t scale = GetRegisterScale (addr);
+              float real = static_cast<float> (GetHoldingRegister (addr)) * scale;
+              float v = apply_fdi (entry.first, real);
+              SetHoldingRegister (addr, static_cast<uint16_t> (std::round (v / scale)));
+              if (v != real)
+                {
+                  // Scale-fix validation evidence for the FDI fabrication path (see
+                  // handle_MIM's identical readback check): confirms the register,
+                  // once read back and re-scaled, reproduces the fabricated value
+                  // apply_fdi actually returned, not a truncated/overflowed one.
+                  float reconstructed = static_cast<float> (GetHoldingRegister (addr)) * scale;
+                  std::cout << "ModbusApplication::set_attack: FDI register readback for "
+                            << entry.first << " reconstructs to " << reconstructed
+                            << " (scale " << scale << ")" << std::endl;
+                }
+            }
+        }
+      else
+        {
+          for (const auto& entry : m_preAttackAnalogValues)
+            {
+              auto it = analog_name_to_address.find (entry.first);
+              if (it != analog_name_to_address.end ())
+                {
+                  uint16_t addr = it->second;
+                  SetHoldingRegister (addr, static_cast<uint16_t> (std::round (entry.second / GetRegisterScale (addr))));
+                }
+            }
+        }
+    }
 }
 
 void
@@ -792,6 +897,12 @@ ModbusApplicationNew::initConfig (void)
     {
       NS_LOG_INFO ("Unable to open points file:" << points_filename);
       exit (-1);
+    }
+
+  for (const auto& entry : analog_name_to_address)
+    {
+      m_preAttackAnalogValues[entry.first] =
+        static_cast<float> (GetHoldingRegister (entry.second)) * GetRegisterScale (entry.second);
     }
 
   NS_LOG_INFO ("ModbusApplication::initConfig: loaded " << analog_point_names.size ()
@@ -1084,8 +1195,19 @@ ModbusApplicationNew::StartApplication ()
     // Unlike handle_MIM (reactive to packet arrival), FDI has a fixed window on the
     // outstation itself, so it can be scheduled once here instead of deduped via
     // StartVect/StopVect on every store_points() call. See DNP3's identical addition.
-    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &ModbusApplicationNew::set_attack, this, true);
-    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &ModbusApplicationNew::set_attack, this, false);
+    double attackStart = safeStod (m_attackStartTime, -1.0, "FDI AttackStartTime");
+    double attackEnd = safeStod (m_attackEndTime, -1.0, "FDI AttackEndTime");
+    if (attackStart < 0.0 || attackEnd < 0.0)
+      {
+        std::cerr << "[WARN] " << "ModbusApplicationNew::StartApplication: bad FDI AttackStartTime/"
+                     "AttackEndTime config value for node " << m_name
+                     << " -- FDI disabled for this instance." << std::endl;
+      }
+    else
+      {
+        Simulator::Schedule(Seconds(attackStart), &ModbusApplicationNew::set_attack, this, true);
+        Simulator::Schedule(Seconds(attackEnd), &ModbusApplicationNew::set_attack, this, false);
+      }
   }
 
   // Modbus TCP is TCP by definition; the EnableTCP attribute is kept
@@ -1370,6 +1492,7 @@ ModbusApplicationNew::HandleAccept (Ptr<Socket> s, const Address& from)
   m_socketList.push_back (s);
   startOutstation (s);
   NS_LOG_INFO ("ModbusApplication: in HandleAccept");
+
   // std::cout, not NS_LOG_*: compiled out in this build's optimized
   // profile (see feedback_ns3_build_environment_gotchas.md). Tracks
   // slow-DDoS connection-exhaustion evidence: this list has no cap and no
@@ -1948,6 +2071,8 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                     {
                       // Replay: reinject the frozen pre-window capture instead of the live
                       // value (or a fabricated one, like type 2/4 would).
+                      // std::cout, not NS_LOG_*: compiled out in this build's optimized
+                      // profile (see feedback_ns3_build_environment_gotchas.md).
                       if (isAnalogPoint[qq])
                         {
                           auto it = m_replayCaptureRegisters.find (requestPdu.address);
@@ -1955,12 +2080,12 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                             {
                               SetHoldingRegister (requestPdu.address, it->second);
                               std::cout << "ModbusApplication::handle_MIM: replayed captured register value "
-                                           << it->second << " at address " << requestPdu.address << std::endl;
+                                        << it->second << " at address " << requestPdu.address << std::endl;
                             }
                           else
                             {
                               std::cout << "ModbusApplication::handle_MIM: attack_type 5 fired for address "
-                                           << requestPdu.address << " but no real value was captured yet" << std::endl;
+                                        << requestPdu.address << " but no real value was captured yet" << std::endl;
                             }
                         }
                       else
@@ -1970,12 +2095,12 @@ ModbusApplicationNew::handle_MIM (Ptr<Socket> socket)
                             {
                               SetCoil (requestPdu.address, it->second);
                               std::cout << "ModbusApplication::handle_MIM: replayed captured coil value "
-                                           << it->second << " at address " << requestPdu.address << std::endl;
+                                        << it->second << " at address " << requestPdu.address << std::endl;
                             }
                           else
                             {
                               std::cout << "ModbusApplication::handle_MIM: attack_type 5 fired for address "
-                                           << requestPdu.address << " but no real value was captured yet" << std::endl;
+                                        << requestPdu.address << " but no real value was captured yet" << std::endl;
                             }
                         }
                     }

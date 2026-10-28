@@ -1,3 +1,4 @@
+
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 /*
  * Copyright 2007 University of Washington
@@ -25,6 +26,7 @@
 #include <sstream>
 #include <algorithm>
 #include <string>
+#include <stdexcept>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -337,6 +339,7 @@ Dnp3ApplicationNew::Dnp3ApplicationNew ()
   m_rand_delay_ns = CreateObject<UniformRandomVariable> ();
   m_rand_delay_ns->SetAttribute ("Min", DoubleValue  (m_jitterMinNs));
   m_rand_delay_ns->SetAttribute ("Max", DoubleValue  (m_jitterMaxNs));
+  m_fdiRand = CreateObject<UniformRandomVariable> ();
 
 }
 
@@ -442,6 +445,48 @@ Dnp3ApplicationNew::SetLocal (Ipv6Address ip, uint16_t port)
   m_localPort = port;
 }
 
+// safeStof/safeStod -- FDI config values (Value_attck, AttackStartTime,
+// AttackEndTime) come from grid.json/AttackConf and can be malformed or
+// empty; std::stof/std::stod throw std::invalid_argument/std::out_of_range
+// uncaught on that, crashing the whole simulation. This is the same crash
+// class the MIM GetVal guard (see fix/dnp3-getval-crash) closes -- see PR
+// review from Oceane Bel (PNNL) on the FDI PR. Duplicated per protocol file,
+// matching this file's existing convention (e.g. get_val_vector) of no
+// shared helics helper header. Declared here (above StartApplication) rather
+// than just above apply_fdi, since StartApplication -- which also needs it --
+// appears earlier in this file than apply_fdi does.
+static float
+safeStof (const std::string& s, float defaultValue, const std::string& context)
+{
+    try {
+        return std::stof (s);
+    } catch (const std::invalid_argument&) {
+        std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a float, using default "
+                     << defaultValue << std::endl;
+        return defaultValue;
+    } catch (const std::out_of_range&) {
+        std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for float, using default "
+                     << defaultValue << std::endl;
+        return defaultValue;
+    }
+}
+
+static double
+safeStod (const std::string& s, double defaultValue, const std::string& context)
+{
+    try {
+        return std::stod (s);
+    } catch (const std::invalid_argument&) {
+        std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a double, using default "
+                     << defaultValue << std::endl;
+        return defaultValue;
+    } catch (const std::out_of_range&) {
+        std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for double, using default "
+                     << defaultValue << std::endl;
+        return defaultValue;
+    }
+}
+
 // Application Methods
 void Dnp3ApplicationNew::StartApplication ()    // Called at time specified by Start
 {
@@ -456,8 +501,16 @@ void Dnp3ApplicationNew::StartApplication ()    // Called at time specified by S
     // Unlike handle_MIM (reactive to packet arrival), FDI has a fixed window on the
     // outstation itself, so it can be scheduled once here instead of deduped via
     // StartVect/StopVect on every store_points() call.
-    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &Dnp3ApplicationNew::set_attack, this, true);
-    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &Dnp3ApplicationNew::set_attack, this, false);
+    double attackStart = safeStod (m_attackStartTime, -1.0, "FDI AttackStartTime");
+    double attackEnd = safeStod (m_attackEndTime, -1.0, "FDI AttackEndTime");
+    if (attackStart < 0.0 || attackEnd < 0.0) {
+        std::cerr << "[WARN] " << "Dnp3ApplicationNew::StartApplication: bad FDI AttackStartTime/"
+                     "AttackEndTime config value for node " << m_name
+                     << " -- FDI disabled for this instance." << std::endl;
+    } else {
+        Simulator::Schedule(Seconds(attackStart), &Dnp3ApplicationNew::set_attack, this, true);
+        Simulator::Schedule(Seconds(attackEnd), &Dnp3ApplicationNew::set_attack, this, false);
+    }
   }
   NS_LOG_LOGIC("I am is the start application :)");
   if(m_enableTcp)
@@ -929,6 +982,8 @@ void Dnp3ApplicationNew::initConfig(void)
 		NS_LOG_INFO("Unable to open points file:" << points_filename);
 		exit(-1);
 	}
+
+        m_preAttackAnalogPoints = analog_points;
 }
 
 
@@ -953,12 +1008,12 @@ float Dnp3ApplicationNew::apply_fdi(const std::string& name, float realValue)
             continue;
         }
 
-        float r = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        float r = m_fdiRand->GetValue (0.0, 1.0);
         if (m_attackChance <= r) {
             return realValue;
         }
 
-        float fabricated = std::stof(vals[i]);
+        float fabricated = safeStof(vals[i], realValue, "apply_fdi Value_attck");
         std::cout << "FDI: outstation " << m_name << " fabricating point " << name << " -> " << fabricated
                    << " (real value " << realValue << ") at time " << Simulator::Now().GetSeconds() << "s" << std::endl;
         return fabricated;
@@ -1154,6 +1209,28 @@ void Dnp3ApplicationNew::periodic_poll_Class(int pollRate){
 void Dnp3ApplicationNew::set_attack(bool state) {
     NS_LOG_INFO ("MIMServer::set_attack >>> Start Attack Mode: " << m_attackType);
     m_attack_on = state;
+
+    // Option B fix (Sep 2026): apply_fdi was only ever wired into
+    // store_points(), reached exclusively via the HELICS DoEndpoint path --
+    // which never fires in this codebase (see natig-v2 research notes,
+    // same fix already shipped for GOOSE). The comment above apply_fdi()
+    // assumed "the next real HELICS update simply overwrites it" once the
+    // attack window closes -- that assumption doesn't hold since Store()
+    // never fires, so this restores the pre-attack baseline explicitly
+    // instead. Apply FDI directly to this outstation's own analog_points
+    // at the moment the attack window opens, so a fabricated value
+    // actually reaches a poll response. Guarded on fdi_flag specifically
+    // since set_attack is shared with the separate MIM attack mechanism
+    // above, which must not have its analog_points touched.
+    if (fdi_flag) {
+        if (state) {
+            for (auto& entry : analog_points) {
+                entry.second = apply_fdi(entry.first, entry.second);
+            }
+        } else {
+            analog_points = m_preAttackAnalogPoints;
+        }
+    }
 }
 
 void Dnp3ApplicationNew::send_control_binary(Dnp3ApplicationNew::ControlType type, DnpIndex_t index, ControlOutputRelayBlock::Code code) {

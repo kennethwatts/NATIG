@@ -54,6 +54,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <stdexcept>
 #include "ns3/packet.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/inet6-socket-address.h"
@@ -467,6 +468,56 @@ GooseApplicationNew::GetBinaryPoint (const std::string &pointName) const
 // datasetChangedSinceLastPublish()'s deadband/burst logic exactly like a
 // real physical change would, rather than needing its own stNum-forging
 // logic the way handle_rogue_publish does.
+
+// safeStof/safeStod -- FDI config values (Value_attck, AttackStartTime,
+// AttackEndTime) come from grid.json/AttackConf and can be malformed or
+// empty; std::stof/std::stod throw std::invalid_argument/std::out_of_range
+// uncaught on that, crashing the whole simulation. This is the same crash
+// class the MIM GetVal guard closes -- see PR review from Oceane Bel (PNNL)
+// on the FDI PR. Duplicated per protocol file, matching this file's existing
+// convention (e.g. get_val_vector) of no shared helics helper header.
+static float
+safeStof (const std::string& s, float defaultValue, const std::string& context)
+{
+  try
+    {
+      return std::stof (s);
+    }
+  catch (const std::invalid_argument&)
+    {
+      std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a float, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+  catch (const std::out_of_range&)
+    {
+      std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for float, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+}
+
+static double
+safeStod (const std::string& s, double defaultValue, const std::string& context)
+{
+  try
+    {
+      return std::stod (s);
+    }
+  catch (const std::invalid_argument&)
+    {
+      std::cerr << "[WARN] " << context << ": could not parse '" << s << "' as a double, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+  catch (const std::out_of_range&)
+    {
+      std::cerr << "[WARN] " << context << ": value '" << s << "' out of range for double, using default "
+                   << defaultValue << std::endl;
+      return defaultValue;
+    }
+}
+
 float
 GooseApplicationNew::apply_fdi (const std::string& name, float realValue)
 {
@@ -489,7 +540,7 @@ GooseApplicationNew::apply_fdi (const std::string& name, float realValue)
           return realValue;
         }
 
-      float fabricated = std::stof (vals[i]);
+      float fabricated = safeStof (vals[i], realValue, "apply_fdi Value_attck");
       std::cout << "FDI: publisher " << m_name << " fabricating point " << name << " -> " << fabricated
                  << " (real value " << realValue << ") at time " << Simulator::Now ().GetSeconds () << "s" << std::endl;
       return fabricated;
@@ -543,6 +594,33 @@ GooseApplicationNew::set_attack (bool state)
 {
   NS_LOG_INFO ("GooseApplication::set_attack >>> Start Attack Mode: " << m_attackType);
   m_attack_on = state;
+
+  // Option B fix (Sep 2026): apply_fdi was only ever wired into
+  // store_points(), reached exclusively via the HELICS DoEndpoint path --
+  // which never fires in this codebase (see natig-v2 research notes).
+  // Apply FDI directly to the compromised publisher's own dataset at the
+  // moment the attack window opens, so a fabricated value actually
+  // reaches a transmitted PDU. Guarded on fdi_flag specifically (not
+  // just any set_attack toggle) since this function is shared with the
+  // separate rogue/MIM attack mechanism (see StartApplication's isRogue
+  // scheduling above), which must not have its analogValues touched.
+  // Restoring on attack-end matters because nothing else ever refreshes
+  // these values absent a real Store() -- without it the fabricated
+  // value would persist past the window.
+  if (fdi_flag)
+    {
+      if (state)
+        {
+          for (auto& entry : m_deviceConfig.analogValues)
+            {
+              entry.second = apply_fdi (entry.first, entry.second);
+            }
+        }
+      else
+        {
+          m_deviceConfig.analogValues = m_preAttackAnalogValues.analogValues;
+        }
+    }
 }
 
 void
@@ -633,6 +711,8 @@ GooseApplicationNew::initConfig (void)
       NS_LOG_INFO ("Unable to open points file:" << points_filename);
       exit (-1);
     }
+
+  m_preAttackAnalogValues = m_deviceConfig;
 
   NS_LOG_INFO ("GooseApplication::initConfig: loaded " << analog_point_names.size ()
                << " analog points and " << binary_point_names.size () << " binary points");
@@ -845,8 +925,19 @@ GooseApplicationNew::StartApplication ()
     // Unlike handle_rogue_publish (reactive to attack_data's schedule), FDI has
     // a fixed window on the real publisher itself, so it can be scheduled once
     // here instead. See DNP3/Modbus/MMS's identical addition.
-    Simulator::Schedule(Seconds(std::stod(m_attackStartTime)), &GooseApplicationNew::set_attack, this, true);
-    Simulator::Schedule(Seconds(std::stod(m_attackEndTime)), &GooseApplicationNew::set_attack, this, false);
+    double attackStart = safeStod (m_attackStartTime, -1.0, "FDI AttackStartTime");
+    double attackEnd = safeStod (m_attackEndTime, -1.0, "FDI AttackEndTime");
+    if (attackStart < 0.0 || attackEnd < 0.0)
+      {
+        std::cerr << "[WARN] " << "GooseApplicationNew::StartApplication: bad FDI AttackStartTime/"
+                     "AttackEndTime config value for node " << m_name
+                     << " -- FDI disabled for this instance." << std::endl;
+      }
+    else
+      {
+        Simulator::Schedule(Seconds(attackStart), &GooseApplicationNew::set_attack, this, true);
+        Simulator::Schedule(Seconds(attackEnd), &GooseApplicationNew::set_attack, this, false);
+      }
   }
   makeMulticastConnection ();
 }
