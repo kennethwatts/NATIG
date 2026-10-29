@@ -295,13 +295,6 @@ private:
   // frozen_bin_points mechanism.
   ModbusDeviceConfig m_frozenDeviceConfig;
 
-  // attack_type 5 (replay): last real value captured per address, frozen once
-  // that point's attack window opens. Distinct from m_frozenDeviceConfig above
-  // (that's a whole-device offline snapshot); this is per-point and keyed by
-  // the attack config, not device state.
-  std::map<uint16_t, uint16_t> m_replayCaptureRegisters;
-  std::map<uint16_t, bool> m_replayCaptureCoils;
-
   // Per-address analog register scale (see GetRegisterScale). Populated
   // once in initConfig() at the point each analog point's address is
   // assigned: 4 for ordinary continuous engineering quantities (gives
